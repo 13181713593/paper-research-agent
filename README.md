@@ -1,4 +1,4 @@
-# MCP 多源论文检索与总结智能体（总体架构骨架）
+# MCP多源论文检索与总结智能体
 
 这是一个接口先行、可运行的课程项目骨架。它已经完成：
 
@@ -12,16 +12,20 @@
 
 真实论文 API、OCR/Markdown 解析器、学术重排模型和 LLM 报告器是各小组要补齐的实现。当前 Demo 数据带有醒目标记，不会冒充真实检索结果。
 
-## 为什么调整原流程
-
-原流程“多源检索 → 合并去重 → 基础排序与筛选 → 下载与解析 → 全文确认与最终重排 → 总结报告”方向基本正确，但应把“基础排序”理解为选择一个大于 k 的全文处理池，而不是提前锁死 Top-k。推荐流程是：
+## 流程：
 
 > 查询规划 → 多源并发检索 → 合并去重 → 元数据预排序取 N → 并发全文处理 → 证据确认 → 最终重排取 k → 单篇总结 → 综合报告
 
-完整问题清单见 [docs/ASSIGNMENT_REVIEW.md](docs/ASSIGNMENT_REVIEW.md)，总体架构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，组间接口见 [docs/API_CONTRACTS.md](docs/API_CONTRACTS.md)。
-模型空值规范见 [docs/DATA_MODEL.md](docs/DATA_MODEL.md)，各组交付检查见
-[docs/INTEGRATION_CHECKLIST.md](docs/INTEGRATION_CHECKLIST.md)，Host 配置见
-[docs/MCP_HOST_CONFIG.md](docs/MCP_HOST_CONFIG.md)。
+完整问题清单见 [docs/ASSIGNMENT_REVIEW.md](docs/ASSIGNMENT_REVIEW.md)，
+
+总体架构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)，
+
+组间接口见 [docs/API_CONTRACTS.md](docs/API_CONTRACTS.md)。
+模型空值规范见 [docs/DATA_MODEL.md](docs/DATA_MODEL.md)，
+
+各组交付检查见[docs/INTEGRATION_CHECKLIST.md](docs/INTEGRATION_CHECKLIST.md)，
+
+Host 配置见[docs/MCP_HOST_CONFIG.md](docs/MCP_HOST_CONFIG.md)。
 
 ## 环境要求
 
@@ -39,7 +43,7 @@
 PowerShell：
 
 ```powershell
-cd F:\3-doctor\07_课程学习\01_AI\paper-research-agent
+cd paper-research-agent
 ```
 
 ### 2. 根据 `environment.yml` 创建环境
@@ -73,13 +77,12 @@ python -c "import streamlit, mcp; print('依赖安装成功')"
 如果希望继续使用已有的 `LLM2` 环境，不需要重新创建环境：
 
 ```powershell
-conda activate LLM2
-cd F:\3-doctor\07_课程学习\01_AI\paper-research-agent
+conda activate LLM
+cd paper-research-agent
 python -m pip install -e ".[dev]"
 ```
 
-注意：必须在项目根目录执行 `pip install -e .`。仅安装 Streamlit、直接运行
-`src\paper_agent\ui\app.py`，不会自动把 `src` 加入 Python 模块搜索路径。
+注意：必须在项目根目录执行 `pip install -e .`。
 
 ## 运行项目
 
@@ -118,38 +121,6 @@ python -m paper_agent.mcp_server
 
 ## 常见问题
 
-### `ModuleNotFoundError: No module named 'paper_agent'`
-
-说明当前 Conda 环境中还没有安装项目，或者启动命令使用了其他环境的 Python。
-在项目根目录重新执行：
-
-```powershell
-conda activate paper-agent
-python -m pip install -e ".[dev]"
-python -c "import paper_agent; print(paper_agent.__file__)"
-```
-
-还可以使用下面的命令检查当前解释器：
-
-```powershell
-Get-Command python
-python -m pip --version
-conda info --envs
-```
-
-`python` 和 `pip` 输出的路径应属于同一个 Conda 环境。
-
-### 删除并重新创建环境
-
-环境依赖严重冲突时，可以重建环境：
-
-```powershell
-conda deactivate
-conda env remove -n paper-agent
-conda env create -f environment.yml
-conda activate paper-agent
-```
-
 ## 当前 MCP 工具
 
 `get_pipeline_contract()` 返回可供主 Agent/联调程序读取的阶段契约。
@@ -170,7 +141,7 @@ conda activate paper-agent
 4. 只修改 `paper_agent/bootstrap.py` 的生产装配分支；MCP 和 Streamlit 无需改动。
 5. 每个适配器补齐单元测试，并使用固定查询集做端到端评测。
 
-## 数据模型重点
+## 数据模型
 
 `Paper` 包括题目、作者、单位、日期、出版状态、venue、摘要、评论、arXiv ID、DOI、OpenAlex/Semantic Scholar ID、BibTeX、项目页、数据集、PDF/OA 状态、代码开源状态、引用数、来源记录、别名、冲突、解析质量和分项分数。模型同时区分：
 
