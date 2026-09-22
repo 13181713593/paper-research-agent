@@ -1,0 +1,10 @@
+name: paper-agent
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - "-e .[dev]"
+
