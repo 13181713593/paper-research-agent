@@ -138,6 +138,7 @@ class ScoreBreakdown(StrictModel):
     reranker: Annotated[float | None, Field(ge=0, le=1)] = None
     recency: Annotated[float | None, Field(ge=0, le=1)] = None
     venue_quality: Annotated[float | None, Field(ge=0, le=1)] = None
+    citation_signal: Annotated[float | None, Field(ge=0, le=1)] = None
     intent_match: Annotated[float | None, Field(ge=0, le=1)] = None
     evidence_coverage: Annotated[float | None, Field(ge=0, le=1)] = None
     final: Annotated[float | None, Field(ge=0, le=1)] = None

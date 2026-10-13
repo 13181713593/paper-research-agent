@@ -17,6 +17,8 @@ class Settings:
     max_concurrency: int = 4
     request_timeout_seconds: float = 30.0
     data_dir: str = "data"
+    reranker_model: str | None = None
+    reranker_local_files_only: bool = True
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -27,5 +29,7 @@ class Settings:
                 1.0, float(os.getenv("PAPER_AGENT_REQUEST_TIMEOUT_SECONDS", "30"))
             ),
             data_dir=os.getenv("PAPER_AGENT_DATA_DIR", "data"),
+            reranker_model=os.getenv("PAPER_AGENT_RERANKER_MODEL") or None,
+            reranker_local_files_only=os.getenv("PAPER_AGENT_RERANKER_LOCAL_ONLY", "1") != "0",
         )
 
