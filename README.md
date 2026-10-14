@@ -135,6 +135,8 @@ python -m paper_agent.mcp_server
 
 ## 接入真实组件
 
+第 2 组两级排序已实现，含用户侧重提取、可选 BGE CrossEncoder、分项解释与无模型降级。设置 `PAPER_AGENT_ENV=ranking` 可使用新排序模块进行 Demo 联调，具体配置、公式和限制见 [docs/RANKING.md](docs/RANKING.md)。
+
 1. 阅读 `ports/contracts.py` 与 `docs/API_CONTRACTS.md`。
 2. 在 `adapters/` 中实现对应 Protocol。
 3. 新建生产装配函数，例如 `build_production_dependencies(settings)`。

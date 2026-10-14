@@ -11,6 +11,8 @@ Assembly modes (``PAPER_AGENT_ENV``):
   Crossref, OpenAlex, Semantic Scholar) and the real merger. All later
   stages (ranking, full text, summarization, report) stay demo until
   groups 2 and 3 deliver their adapters.
+- ``ranking``: demo components with the ranking group's academic
+  pre-ranker, evidence verifier and final ranker swapped in.
 """
 
 from __future__ import annotations
@@ -18,6 +20,12 @@ from __future__ import annotations
 from dataclasses import replace
 
 from paper_agent.adapters import build_demo_dependencies
+from paper_agent.adapters.academic_ranker import (
+    AcademicEvidenceVerifier,
+    AcademicFinalRanker,
+    AcademicPreRanker,
+    AcademicRankingConfig,
+)
 from paper_agent.adapters.arxiv_retriever import ArxivRetriever, ArxivSearchConfig
 from paper_agent.adapters.crossref_retriever import CrossrefRetriever
 from paper_agent.adapters.openalex_retriever import OpenAlexRetriever
@@ -56,13 +64,20 @@ def build_agent(settings: Settings | None = None) -> PaperResearchAgent:
         deps = build_demo_dependencies()
     elif settings.app_env == "retrieval":
         deps = build_retrieval_dependencies()
+    elif settings.app_env == "ranking":
+        deps = build_demo_dependencies()
+        config = AcademicRankingConfig(
+            model_name=settings.reranker_model,
+            local_files_only=settings.reranker_local_files_only,
+        )
+        deps.pre_ranker = AcademicPreRanker(config)
+        deps.verifier = AcademicEvidenceVerifier()
+        deps.final_ranker = AcademicFinalRanker(config)
     else:
         raise RuntimeError(
             "Production adapters are not implemented yet. Complete group 1-3 adapters "
             "and replace this branch in paper_agent.bootstrap.build_agent()."
         )
-    pipeline = ResearchPipeline(
-        deps, max_concurrency=settings.max_concurrency
-    )
+    pipeline = ResearchPipeline(deps, max_concurrency=settings.max_concurrency)
     return PaperResearchAgent(pipeline)
 
