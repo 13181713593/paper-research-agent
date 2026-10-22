@@ -84,6 +84,37 @@ python -m pip install -e ".[dev]"
 
 注意：必须在项目根目录执行 `pip install -e .`。
 
+## 配置真实检索（重要）
+
+默认以 `demo` 模式启动，页面返回的是离线示例数据。要使用真实的五源论文检索
+（arXiv、Crossref、OpenAlex、Semantic Scholar、Europe PMC），必须配置环境模式：
+
+1. 在项目根目录复制模板并编辑：
+
+```powershell
+copy .env.example .env
+```
+
+（Linux/macOS 使用 `cp .env.example .env`）
+
+2. 在 `.env` 中设置：
+
+```ini
+PAPER_AGENT_ENV=retrieval
+```
+
+3. 可选：配置 LLM 查询翻译。中文研究想法会先经 LLM 翻译为英文关键词再检索，
+大幅提升召回质量。任何 OpenAI 兼容接口均可（DeepSeek、Ollama `/v1`、vLLM 等）：
+
+```ini
+PAPER_AGENT_LLM_API_KEY=你自己的key
+PAPER_AGENT_LLM_BASE_URL=https://api.deepseek.com
+PAPER_AGENT_LLM_MODEL=deepseek-chat
+```
+
+不配置 LLM 时检索仍可用：英文查询不受影响，中文查询会降级为原文直传。
+请勿把真实 API key 提交进仓库，`.env` 已被 `.gitignore` 排除。
+
 ## 运行项目
 
 ### 运行 Streamlit 页面
