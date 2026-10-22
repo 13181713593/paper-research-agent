@@ -28,6 +28,7 @@ from paper_agent.adapters.academic_ranker import (
 )
 from paper_agent.adapters.arxiv_retriever import ArxivRetriever, ArxivSearchConfig
 from paper_agent.adapters.crossref_retriever import CrossrefRetriever
+from paper_agent.adapters.europepmc_retriever import EuropePmcRetriever
 from paper_agent.adapters.llm_concept_extractor import LLMConceptExtractor
 from paper_agent.adapters.openalex_retriever import OpenAlexRetriever
 from paper_agent.adapters.paper_merger import PaperMerger
@@ -58,6 +59,7 @@ def build_retrieval_dependencies() -> PipelineDependencies:
             CrossrefRetriever(),
             OpenAlexRetriever(),
             SemanticScholarRetriever(),
+            EuropePmcRetriever(),
         ],
         merger=PaperMerger(),
     )

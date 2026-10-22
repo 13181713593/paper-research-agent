@@ -26,6 +26,7 @@ class PaperSource(StrEnum):
     SEMANTIC_SCHOLAR = "semantic_scholar"
     CROSSREF = "crossref"
     OPENALEX = "openalex"
+    EUROPE_PMC = "europe_pmc"
     CORE = "core"
     CNKI = "cnki"
     OTHER = "other"

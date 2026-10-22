@@ -29,6 +29,7 @@ from paper_agent.adapters.crossref_retriever import CrossrefRetriever
 from paper_agent.adapters.llm_concept_extractor import LLMConceptExtractor
 from paper_agent.adapters.openalex_retriever import OpenAlexRetriever
 from paper_agent.adapters.query_planner import HeuristicQueryPlanner
+from paper_agent.adapters.europepmc_retriever import EuropePmcRetriever
 from paper_agent.adapters.semantic_scholar_retriever import SemanticScholarRetriever
 from paper_agent.domain.models import PaperSource, ResearchIdea, SearchPlan, SearchQuery
 
@@ -72,7 +73,10 @@ class QueryPlannerTest(unittest.TestCase):
         plan = asyncio.run(self.planner.plan(ResearchIdea(text=IDEA_ZH), 25))
         sources = [q.source for q in plan.queries]
         self.assertEqual(
-            set(sources), {PaperSource.ARXIV, PaperSource.OPENALEX, PaperSource.CROSSREF, PaperSource.SEMANTIC_SCHOLAR}
+            set(sources), {
+                PaperSource.ARXIV, PaperSource.OPENALEX, PaperSource.CROSSREF,
+                PaperSource.SEMANTIC_SCHOLAR, PaperSource.EUROPE_PMC,
+            }
         )
         for q in plan.queries:
             self.assertEqual(q.limit, 25)
@@ -413,6 +417,76 @@ class RetrieverMappingTest(unittest.TestCase):
             plan = _plan_for(PaperSource.OPENALEX)
             with self.assertRaises(ProviderTimeoutError):
                 asyncio.run(retriever.search(plan))
+
+
+_EPMC_RECORD = {
+    "title": "A context-aware temporal modeling for automatic sleep staging",
+    "authorString": "Vakili AA, Jahanshiri S, Salimi-Badr A.",
+    "journalTitle": "PLoS ONE",
+    "pubYear": "2026",
+    "firstPublicationDate": "2026-09-30",
+    "doi": "10.1371/journal.pone.0358241",
+    "pmid": "42814731",
+    "pmcid": "PMC13626375",
+    "abstractText": "Automatic sleep staging is a critical task in healthcare.",
+    "isOpenAccess": "Y",
+    "citedByCount": "0",
+}
+
+
+class EuropePmcRetrieverTest(unittest.TestCase):
+    @staticmethod
+    def _payload(*records):
+        return {"resultList": {"result": list(records)}}
+
+    def test_record_maps_to_paper_fields(self):
+        retriever = EuropePmcRetriever()
+        paper = retriever._to_papers(self._payload(_EPMC_RECORD))[0]
+        self.assertEqual(paper.title, _EPMC_RECORD["title"])
+        self.assertEqual(len(paper.authors), 3)
+        self.assertEqual(paper.authors[0].name, "Vakili AA")
+        self.assertEqual(paper.year, 2026)
+        self.assertEqual(str(paper.publication_date), "2026-09-30")
+        self.assertEqual(paper.doi, "10.1371/journal.pone.0358241")
+        self.assertEqual(paper.pmid, "42814731")
+        self.assertEqual(paper.venue.name, "PLoS ONE")
+        self.assertTrue(paper.is_open_access)
+        self.assertEqual(paper.citation_count, 0)
+        self.assertIn("PMC13626375", str(paper.landing_page_url))
+        self.assertIn("journal.pone", paper.bibtex)
+        self.assertEqual(paper.source_records[0].source, PaperSource.EUROPE_PMC)
+
+    def test_record_without_title_is_skipped(self):
+        retriever = EuropePmcRetriever()
+        record = dict(_EPMC_RECORD)
+        record["title"] = ""
+        self.assertEqual(retriever._to_papers(self._payload(record)), [])
+
+    def test_missing_optional_fields_stay_none(self):
+        retriever = EuropePmcRetriever()
+        record = {"title": "Minimal record"}
+        paper = retriever._to_papers(self._payload(record))[0]
+        self.assertEqual(paper.authors, [])
+        self.assertIsNone(paper.doi)
+        self.assertIsNone(paper.pmid)
+        self.assertIsNone(paper.abstract)
+        self.assertIsNone(paper.venue)
+        self.assertIsNone(paper.landing_page_url)
+        self.assertFalse(paper.is_open_access)
+
+    def test_empty_payload_returns_empty_list(self):
+        self.assertEqual(EuropePmcRetriever()._to_papers(None), [])
+        self.assertEqual(EuropePmcRetriever()._to_papers({"resultList": {}}), [])
+
+    def test_search_returns_empty_when_plan_lacks_its_source(self):
+        plan = _plan_for(PaperSource.ARXIV)
+        self.assertEqual(asyncio.run(EuropePmcRetriever().search(plan)), [])
+
+    def test_planner_emits_query_for_europe_pmc(self):
+        planner = HeuristicQueryPlanner()
+        plan = asyncio.run(planner.plan(ResearchIdea(text=IDEA_ZH), 10))
+        sources = {q.source for q in plan.queries}
+        self.assertIn(PaperSource.EUROPE_PMC, sources)
 
 
 if __name__ == "__main__":

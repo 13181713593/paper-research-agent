@@ -30,6 +30,7 @@ _PLANNED_SOURCES = (
     PaperSource.OPENALEX,
     PaperSource.CROSSREF,
     PaperSource.SEMANTIC_SCHOLAR,
+    PaperSource.EUROPE_PMC,
 )
 
 

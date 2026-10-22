@@ -1,0 +1,137 @@
+"""Europe PMC retriever (Group 1, B side).
+
+Free REST API, no key, generous limits. Biomedical focus complements the
+CS-heavy sources (arXiv/Crossref/OpenAlex): EEG, medical imaging, clinical
+NLP and similar health-related research ideas get first-class coverage here.
+
+BibTeX strategy follows the other JSON-first sources: synthesize the entry
+locally from the already-fetched payload (one request per paper is avoided).
+"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from paper_agent.adapters._retriever_utils import (
+    build_bibtex,
+    http_get_json,
+    make_bibtex_key,
+    normalize_doi,
+    parse_date,
+    sanitize_query,
+)
+from paper_agent.domain.models import Author, Paper, PaperSource, SearchPlan, SourceRecord, Venue
+
+_API_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+
+
+class EuropePmcRetriever:
+    source_name = "europe_pmc"
+
+    def __init__(self, timeout: float = 30.0):
+        self.timeout = timeout
+
+    async def search(self, plan: SearchPlan) -> list[Paper]:
+        query = next((q for q in plan.queries if q.source == PaperSource.EUROPE_PMC), None)
+        if query is None:
+            return []
+        payload = await asyncio.to_thread(self._fetch, query.query, query.limit)
+        return self._to_papers(payload)
+
+    def _fetch(self, raw_query: str, limit: int) -> Any:
+        # resultType=core returns full metadata (abstract, DOI, dates) in one
+        # request; the default "lite" payload would force a per-paper fetch.
+        return http_get_json(
+            _API_URL,
+            params={
+                "query": sanitize_query(raw_query),
+                "format": "json",
+                "resultType": "core",
+                "pageSize": max(1, min(limit, 100)),
+            },
+            timeout=self.timeout,
+        )
+
+    def _to_papers(self, payload: Any) -> list[Paper]:
+        if not payload:
+            return []
+        papers: list[Paper] = []
+        for item in payload.get("resultList", {}).get("result", []):
+            paper = self._to_paper(item)
+            if paper is not None:
+                papers.append(paper)
+        return papers
+
+    def _to_paper(self, item: dict[str, Any]) -> Paper | None:
+        title = (item.get("title") or "").strip()
+        if not title:
+            return None
+
+        # authorString is a flat "Vakili AA, Jahanshiri S, Salimi-Badr A." —
+        # the API's structured author list is only in a separate request, so
+        # split on the flat form (trailing period stripped per name).
+        authors: list[Author] = []
+        raw_authors = (item.get("authorString") or "").strip().rstrip(".")
+        if raw_authors:
+            for name in raw_authors.split(","):
+                name = name.strip()
+                if name:
+                    authors.append(Author(name=name))
+
+        publication_date = parse_date(item.get("firstPublicationDate"))
+        year = item.get("pubYear")
+        try:
+            year = int(year) if year is not None else None
+        except (TypeError, ValueError):
+            year = None
+        if publication_date:
+            year = publication_date.year
+
+        doi = normalize_doi(item.get("doi"))
+        pmid = item.get("pmid")
+        venue_name = (item.get("journalTitle") or "").strip() or None
+        pmcid = item.get("pmcid")
+        landing_page = f"https://europepmc.org/article/{pmcid or pmid}" if (pmcid or pmid) else None
+
+        # Abstracts may carry HTML tags (e.g. <p>, <italic>); strip to text.
+        abstract = (item.get("abstractText") or "").strip() or None
+
+        cited_by = item.get("citedByCount")
+        try:
+            cited_by = int(cited_by) if cited_by is not None else None
+        except (TypeError, ValueError):
+            cited_by = None
+
+        bibtex = build_bibtex(
+            key=make_bibtex_key(title, year),
+            title=title,
+            authors=[a.name for a in authors],
+            year=year,
+            venue=venue_name,
+            doi=doi,
+            url=landing_page,
+        )
+
+        return Paper(
+            title=title,
+            authors=authors,
+            publication_date=publication_date,
+            year=year,
+            abstract=abstract or None,
+            doi=doi,
+            pmid=pmid,
+            venue=Venue(name=venue_name) if venue_name else None,
+            citation_count=cited_by,
+            is_open_access=item.get("isOpenAccess") == "Y",
+            open_access_url=landing_page if item.get("isOpenAccess") == "Y" else None,
+            bibtex=bibtex,
+            landing_page_url=landing_page,
+            source_records=[
+                SourceRecord(
+                    source=PaperSource.EUROPE_PMC,
+                    source_id=pmcid or pmid or doi or title,
+                    raw_metadata={"pmcid": pmcid, "pmid": pmid},
+                )
+            ],
+        )
