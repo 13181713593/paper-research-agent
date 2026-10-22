@@ -117,10 +117,10 @@ def http_get_json(
                 continue
             raise ProviderUnavailableError(f"{url} server error {response.status_code}")
 
-        # 4xx other than 429: not retryable, but a search returning zero hits
-        # is often expressed as 404 by some providers.
-        if response.status_code == 404:
-            return None
+        # 4xx other than 429: not retryable, fail loudly. A 404 on these
+        # search endpoints means the URL/path is wrong or a proxy intercepted
+        # the request — silently returning "no results" would hide the real
+        # failure from the pipeline's per-source warnings.
         raise ProviderResponseError(f"{url} returned HTTP {response.status_code}: {response.text[:200]}")
 
 

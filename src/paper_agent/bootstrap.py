@@ -28,13 +28,14 @@ from paper_agent.adapters.academic_ranker import (
 )
 from paper_agent.adapters.arxiv_retriever import ArxivRetriever, ArxivSearchConfig
 from paper_agent.adapters.crossref_retriever import CrossrefRetriever
+from paper_agent.adapters.llm_concept_extractor import LLMConceptExtractor
 from paper_agent.adapters.openalex_retriever import OpenAlexRetriever
 from paper_agent.adapters.paper_merger import PaperMerger
 from paper_agent.adapters.query_planner import HeuristicQueryPlanner
 from paper_agent.adapters.semantic_scholar_retriever import SemanticScholarRetriever
 from paper_agent.application.agent import PaperResearchAgent
 from paper_agent.application.pipeline import PipelineDependencies, ResearchPipeline
-from paper_agent.config import Settings
+from paper_agent.config import Settings, load_local_env
 
 
 def build_retrieval_dependencies() -> PipelineDependencies:
@@ -45,9 +46,13 @@ def build_retrieval_dependencies() -> PipelineDependencies:
     and must be replaced by their owners later.
     """
     demo = build_demo_dependencies()
+    # LLM-first concept extraction (translates Chinese ideas to English
+    # search keywords). Inactive without PAPER_AGENT_LLM_API_KEY; degrades
+    # transparently to the offline heuristic extractor otherwise.
+    extractor = LLMConceptExtractor()
     return replace(
         demo,
-        query_planner=HeuristicQueryPlanner(),
+        query_planner=HeuristicQueryPlanner(concept_extractor=extractor),
         retrievers=[
             ArxivRetriever(config=ArxivSearchConfig(max_retries=2)),
             CrossrefRetriever(),
@@ -59,6 +64,7 @@ def build_retrieval_dependencies() -> PipelineDependencies:
 
 
 def build_agent(settings: Settings | None = None) -> PaperResearchAgent:
+    load_local_env()  # Local secrets (.env is gitignored); real env wins.
     settings = settings or Settings.from_env()
     if settings.app_env == "demo":
         deps = build_demo_dependencies()

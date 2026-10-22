@@ -49,29 +49,49 @@ class HeuristicQueryPlanner:
 
     async def plan(self, idea: ResearchIdea, limit_per_source: int) -> SearchPlan:
         extracted = self.concept_extractor.extract(idea.text)
-        concepts = list(extracted.concepts) or ["machine learning"]
+        concepts = list(extracted.concepts)
+        if not concepts:
+            # Extraction found nothing usable (e.g. Chinese input with no
+            # lexicon hits and no LLM configured). Pass the raw text through
+            # so OpenAlex/Crossref can still match it; never silently search
+            # an unrelated default topic like "machine learning".
+            concepts = [" ".join(idea.text.split())]
 
         for term in idea.required_terms:
             if term not in concepts:
                 concepts.append(term)
 
         synonyms = list(extracted.synonyms)
+        # Relevance-search sources (Crossref/OpenAlex/Semantic Scholar)
+        # handle multi-keyword queries well; take the plain joined form.
         base_query = " ".join(concepts)
+        # arXiv's Boolean API ANDs every term, so each extra keyword slashes
+        # recall (verified: 3 phrases -> 0 hits, top phrase alone -> 76).
+        # LLM concepts are importance-ordered, so arXiv searches only the
+        # top concept as a quoted phrase — the same topic at the right
+        # granularity for that API. (See test hits in git history.)
+        top = concepts[0]
+        arxiv_query = f'"{top}"' if " " in top else top
         # Filter keys follow the retrieval group's shared protocol
         # (see ArxivRetriever): only date_from/date_to/excluded_terms/
         # required_terms are recognized. Synonyms live on the plan itself.
         filters: dict[str, list[str]] = {}
+        if idea.required_terms:
+            # arXiv queries carry only the top concept (recall), so required
+            # terms reach arXiv through the filter the adapter ANDs in.
+            filters["required_terms"] = list(idea.required_terms)
         if idea.excluded_terms:
             filters["excluded_terms"] = list(idea.excluded_terms)
-        queries = [
-            SearchQuery(
-                source=source,
-                query=base_query,
-                limit=limit_per_source,
-                filters=filters,
+        queries = []
+        for source in _PLANNED_SOURCES:
+            queries.append(
+                SearchQuery(
+                    source=source,
+                    query=arxiv_query if source == PaperSource.ARXIV else base_query,
+                    limit=limit_per_source,
+                    filters=filters,
+                )
             )
-            for source in _PLANNED_SOURCES
-        ]
 
         inclusion = [
             "Paper metadata matches at least one core concept of the idea",

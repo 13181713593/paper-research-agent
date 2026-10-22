@@ -9,6 +9,7 @@ per-source warning instead of failing the run.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 from paper_agent.adapters._retriever_utils import (
@@ -32,7 +33,9 @@ class SemanticScholarRetriever:
     source_name = "semantic_scholar"
 
     def __init__(self, api_key: str | None = None, timeout: float = 30.0):
-        self.api_key = api_key
+        # Optional key lifts the shared unauthenticated pool (~100 req/5 min)
+        # to a dedicated limit. Never hardcode; read from the environment.
+        self.api_key = api_key or os.getenv("SEMANTIC_SCHOLAR_API_KEY") or None
         self.timeout = timeout
 
     async def search(self, plan: SearchPlan) -> list[Paper]:

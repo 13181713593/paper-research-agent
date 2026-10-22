@@ -9,6 +9,29 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+
+def load_local_env(path: str | Path | None = None) -> None:
+    """Load KEY=VALUE pairs from a local ``.env`` file into ``os.environ``.
+
+    Keys already present in the real environment win (no overrides), so CI
+    and container settings are never shadowed. Values may be quoted; blank
+    lines and ``#`` comments are skipped. Deliberately dependency-free —
+    this only supports the plain ``KEY=VALUE`` shape the project documents.
+    """
+    target = Path(path) if path is not None else Path.cwd() / ".env"
+    if not target.is_file():
+        return
+    for line in target.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 @dataclass(frozen=True, slots=True)

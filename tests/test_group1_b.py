@@ -82,7 +82,12 @@ class QueryPlannerTest(unittest.TestCase):
         idea = ResearchIdea(text=IDEA_ZH, required_terms=["curriculum learning"])
         plan = asyncio.run(self.planner.plan(idea, 10))
         for q in plan.queries:
-            self.assertIn("curriculum learning", q.query)
+            if q.source == PaperSource.ARXIV:
+                # arXiv queries carry only the top concept; required terms
+                # are enforced via the filter the adapter ANDs in.
+                self.assertEqual(q.filters.get("required_terms"), ["curriculum learning"])
+            else:
+                self.assertIn("curriculum learning", q.query)
 
     def test_inclusion_criteria_mention_required_terms(self):
         idea = ResearchIdea(text=IDEA_ZH, required_terms=["GRPO"])
@@ -112,7 +117,10 @@ class QueryPlannerTest(unittest.TestCase):
 
 class LLMConceptExtractorTest(unittest.TestCase):
     def test_inactive_without_key_uses_heuristic(self):
-        with mock.patch.dict("os.environ", {}, clear=False):
+        # Explicitly blank the key: earlier tests may call build_agent(),
+        # whose load_local_env() imports the developer's .env into this
+        # process. This test must stay hermetic and offline.
+        with mock.patch.dict("os.environ", {"PAPER_AGENT_LLM_API_KEY": ""}):
             extractor = LLMConceptExtractor(api_key=None)
             extracted = extractor.extract(IDEA_ZH)
             self.assertIn("reinforcement learning", extracted.concepts)
@@ -382,11 +390,21 @@ class RetrieverMappingTest(unittest.TestCase):
 
     def test_search_empty_payload_returns_empty_list(self):
         retriever = CrossrefRetriever()
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"message": {"items": []}}
         with mock.patch("paper_agent.adapters._retriever_utils.requests.get") as get:
-            get.return_value = mock.Mock(status_code=404)
+            get.return_value = response
             plan = _plan_for(PaperSource.CROSSREF)
             result = asyncio.run(retriever.search(plan))
         self.assertEqual(result, [])
+
+    def test_search_404_raises_instead_of_silent_empty(self):
+        retriever = CrossrefRetriever()
+        with mock.patch("paper_agent.adapters._retriever_utils.requests.get") as get:
+            get.return_value = mock.Mock(status_code=404, text="not found")
+            plan = _plan_for(PaperSource.CROSSREF)
+            with self.assertRaises(ProviderResponseError):
+                asyncio.run(retriever.search(plan))
 
     def test_search_provider_error_propagates_typed(self):
         retriever = OpenAlexRetriever()
