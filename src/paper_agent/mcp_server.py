@@ -43,8 +43,8 @@ async def research_papers(
 
     Returns:
         A structured result containing papers, score explanations, summaries,
-        report, warnings, and stage timing. The bundled implementation is an
-        offline demo; replace adapters in ``build_demo_dependencies``.
+        report, warnings, and stage timing. 组件由 PAPER_AGENT_ENV 选择；
+        production 使用三组完整链路，demo 为离线演示。
     """
     request = PipelineRequest(
         idea=ResearchIdea(text=research_idea),

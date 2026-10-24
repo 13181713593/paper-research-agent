@@ -26,10 +26,10 @@ from paper_agent.adapters._retriever_utils import (
     restore_abstract_from_inverted_index,
 )
 from paper_agent.adapters.crossref_retriever import CrossrefRetriever
+from paper_agent.adapters.europepmc_retriever import EuropePmcRetriever
 from paper_agent.adapters.llm_concept_extractor import LLMConceptExtractor
 from paper_agent.adapters.openalex_retriever import OpenAlexRetriever
 from paper_agent.adapters.query_planner import HeuristicQueryPlanner
-from paper_agent.adapters.europepmc_retriever import EuropePmcRetriever
 from paper_agent.adapters.semantic_scholar_retriever import SemanticScholarRetriever
 from paper_agent.domain.models import PaperSource, ResearchIdea, SearchPlan, SearchQuery
 

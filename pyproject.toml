@@ -1,7 +1,7 @@
 [project]
 name = "paper-research-agent"
 version = "0.2.0"
-description = "MCP-based multi-source paper retrieval and synthesis agent scaffold"
+description = "MCP-based multi-source paper retrieval and synthesis agent"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,11 +10,16 @@ dependencies = [
   "streamlit>=1.40,<2",
   "arxiv>=2.4,<3",
   "bibtexparser>=1.4,<2",
+  "requests>=2.32,<3",
+  "httpx>=0.27,<1",
+  "python-dotenv[cli]>=1,<2",
+  "defusedxml>=0.7,<1",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.8", "mypy>=1.13"]
 ranking = ["sentence-transformers>=5,<6"]
+processing = ["pypdf>=4,<8"]
 
 [project.scripts]
 paper-agent-mcp = "paper_agent.mcp_server:main"

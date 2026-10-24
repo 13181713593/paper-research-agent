@@ -42,6 +42,15 @@ class Settings:
     data_dir: str = "data"
     reranker_model: str | None = None
     reranker_local_files_only: bool = True
+    # Group 3: download / parse / summarize / report
+    unpaywall_email: str = ""
+    download_timeout_seconds: float = 60.0
+    pdf_max_bytes: int = 30_000_000
+    download_retry_limit: int = 2
+    download_max_redirects: int = 5
+    markdown_backend: str = "auto"
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_model: str = "gpt-4o-mini"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -54,5 +63,21 @@ class Settings:
             data_dir=os.getenv("PAPER_AGENT_DATA_DIR", "data"),
             reranker_model=os.getenv("PAPER_AGENT_RERANKER_MODEL") or None,
             reranker_local_files_only=os.getenv("PAPER_AGENT_RERANKER_LOCAL_ONLY", "1") != "0",
+            unpaywall_email=os.getenv("UNPAYWALL_EMAIL", ""),
+            download_timeout_seconds=max(
+                5.0, float(os.getenv("PAPER_AGENT_DOWNLOAD_TIMEOUT_SECONDS", "60"))
+            ),
+            pdf_max_bytes=max(1, int(os.getenv("PAPER_AGENT_PDF_MAX_BYTES", "30000000"))),
+            download_retry_limit=max(
+                0, int(os.getenv("PAPER_AGENT_DOWNLOAD_RETRY_LIMIT", "2"))
+            ),
+            download_max_redirects=max(
+                0, int(os.getenv("PAPER_AGENT_DOWNLOAD_MAX_REDIRECTS", "5"))
+            ),
+            markdown_backend=os.getenv("PAPER_AGENT_MARKDOWN_BACKEND", "auto"),
+            llm_base_url=os.getenv(
+                "PAPER_AGENT_LLM_BASE_URL", "https://api.openai.com/v1"
+            ),
+            llm_model=os.getenv("PAPER_AGENT_LLM_MODEL", "gpt-4o-mini"),
         )
 

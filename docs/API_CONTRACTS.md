@@ -79,14 +79,14 @@
 
 只能基于 `PaperSummary` 与其 evidence 进行综合。未来方向需标注为系统推断，不应伪称论文作者结论。
 
-## 建议目录命名
+## 装配与联调清单
 
-各组实现放在 `adapters/` 下，例如：
+各组适配器位于 `adapters/`，在 `bootstrap.py` 统一接线，并补齐对应单元测试。不得修改 `ResearchPipeline` 的阶段顺序，也不得在 UI 或 MCP 中复制业务编排。
 
-- `adapters/arxiv_retriever.py`
-- `adapters/openalex_retriever.py`
-- `adapters/mineru_processor.py`
-- `adapters/bge_reranker.py`
-- `adapters/llm_report_writer.py`
+| 负责组 | 交付检查 |
+|---|---|
+| 第 1 组：检索与去重 | 实现查询规划、至少两个来源、BibTeX 映射和去重；检索仅返回元数据；保留来源 ID、检索时间和原始字段；覆盖超时、429、空结果、非法日期、缺摘要、BibTeX 多作者及不同版本去重。 |
+| 第 2 组：筛选与重排 | 预排序选 N 个全文候选，证据确认后最终取 k；分数归一化并记录公式/模型/提示词版本与解释；时间、venue、引用量不得压过主题相关性；使用固定标注集评测 Precision@k、nDCG@k 或人工相关性。 |
+| 第 3 组：下载与总结 | 完成 OA 定位、下载、Markdown 解析、单篇总结和综合报告；限制协议、重定向、响应大小、MIME、PDF 魔数、超时与并发；保留哈希和下载/解析缓存；显式标记摘要降级，关键结论提供 `EvidenceRef`。 |
 
-完成后只修改依赖装配函数，不修改 `ResearchPipeline`。
+第三组主流程通过 `build_processing_components()` 装配；独立入口通过 `build_processing_workbench()` 调用应用层，仅处理指定论文，不替代检索或排序。回归测试统一放在 `tests/`，联网及真实模型测试需显式开启，见 [README](../README.md)。

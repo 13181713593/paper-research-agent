@@ -1,25 +1,10 @@
-"""Dependency composition root.
-
-Group implementations are wired here and nowhere else. During parallel work,
-each group can replace one adapter without changing the pipeline, MCP server,
-or Streamlit page.
-
-Assembly modes (``PAPER_AGENT_ENV``):
-- ``demo`` (default): offline demo components, unchanged team baseline.
-- ``retrieval``: retrieval group (A + B) production components for the
-  retrieval segment — real query planner, four live sources (arXiv,
-  Crossref, OpenAlex, Semantic Scholar) and the real merger. All later
-  stages (ranking, full text, summarization, report) stay demo until
-  groups 2 and 3 deliver their adapters.
-- ``ranking``: demo components with the ranking group's academic
-  pre-ranker, evidence verifier and final ranker swapped in.
-"""
+"""统一装配入口：保留各组联调模式，production 串起三组真实组件。"""
 
 from __future__ import annotations
 
 from dataclasses import replace
 
-from paper_agent.adapters import build_demo_dependencies
+from paper_agent.adapters import build_demo_dependencies, build_processing_components
 from paper_agent.adapters.academic_ranker import (
     AcademicEvidenceVerifier,
     AcademicFinalRanker,
@@ -39,20 +24,16 @@ from paper_agent.application.pipeline import PipelineDependencies, ResearchPipel
 from paper_agent.config import Settings, load_local_env
 
 
-def build_retrieval_dependencies() -> PipelineDependencies:
-    """Retrieval segment (group 1, sides A + B) production assembly.
-
-    Real planner/retrievers/merger are swapped into the shared dependency
-    graph; components owned by other groups are taken from the demo assembly
-    and must be replaced by their owners later.
-    """
-    demo = build_demo_dependencies()
-    # LLM-first concept extraction (translates Chinese ideas to English
-    # search keywords). Inactive without PAPER_AGENT_LLM_API_KEY; degrades
-    # transparently to the offline heuristic extractor otherwise.
-    extractor = LLMConceptExtractor()
+def build_retrieval_dependencies(settings: Settings | None = None) -> PipelineDependencies:
+    """第一组五源检索与去重；其他阶段保留演示组件供单组联调。"""
+    settings = settings or Settings.from_env()
+    extractor = LLMConceptExtractor(
+        base_url=settings.llm_base_url,
+        model=settings.llm_model,
+        timeout=min(20.0, settings.request_timeout_seconds),
+    )
     return replace(
-        demo,
+        build_demo_dependencies(),
         query_planner=HeuristicQueryPlanner(concept_extractor=extractor),
         retrievers=[
             ArxivRetriever(config=ArxivSearchConfig(max_retries=2)),
@@ -66,14 +47,19 @@ def build_retrieval_dependencies() -> PipelineDependencies:
 
 
 def build_agent(settings: Settings | None = None) -> PaperResearchAgent:
-    load_local_env()  # Local secrets (.env is gitignored); real env wins.
+    load_local_env()
     settings = settings or Settings.from_env()
-    if settings.app_env == "demo":
-        deps = build_demo_dependencies()
-    elif settings.app_env == "retrieval":
-        deps = build_retrieval_dependencies()
-    elif settings.app_env == "ranking":
-        deps = build_demo_dependencies()
+    if settings.app_env not in {"demo", "retrieval", "ranking", "production"}:
+        raise RuntimeError(
+            f"Unknown PAPER_AGENT_ENV '{settings.app_env}'. Supported values: "
+            "demo, retrieval, ranking, production (full research pipeline)."
+        )
+    deps = (
+        build_retrieval_dependencies(settings)
+        if settings.app_env in {"retrieval", "production"}
+        else build_demo_dependencies()
+    )
+    if settings.app_env in {"ranking", "production"}:
         config = AcademicRankingConfig(
             model_name=settings.reranker_model,
             local_files_only=settings.reranker_local_files_only,
@@ -81,11 +67,24 @@ def build_agent(settings: Settings | None = None) -> PaperResearchAgent:
         deps.pre_ranker = AcademicPreRanker(config)
         deps.verifier = AcademicEvidenceVerifier()
         deps.final_ranker = AcademicFinalRanker(config)
-    else:
-        raise RuntimeError(
-            "Production adapters are not implemented yet. Complete group 1-3 adapters "
-            "and replace this branch in paper_agent.bootstrap.build_agent()."
-        )
+    if settings.app_env == "production":
+        components = build_processing_components(settings)
+        deps.fulltext_processor = components.fulltext_processor
+        deps.summarizer = components.summarizer
+        deps.report_writer = components.report_writer
     pipeline = ResearchPipeline(deps, max_concurrency=settings.max_concurrency)
     return PaperResearchAgent(pipeline)
 
+
+def build_processing_workbench(settings: Settings | None = None):
+    """独立工作台仅处理指定论文，不执行检索或排序。"""
+    from paper_agent.adapters.arxiv_metadata import ArxivMetadataEnricher
+    from paper_agent.application.processing_workbench import ProcessingWorkbench
+
+    load_local_env()
+    settings = settings or Settings.from_env()
+    metadata = ArxivMetadataEnricher(timeout_seconds=min(15.0, settings.request_timeout_seconds))
+    return ProcessingWorkbench(
+        lambda executor: build_processing_components(settings, parser_executor=executor),
+        metadata_enricher=metadata.enrich,
+    )
