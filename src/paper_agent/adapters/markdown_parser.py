@@ -26,6 +26,7 @@ import json
 import os
 import re
 import zipfile
+from concurrent.futures import Executor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -194,13 +195,19 @@ def _text_to_markdown(text: str, fallback_title: str) -> str:
     return markdown + "\n"
 
 
+def _extract_in_worker(pdf_path: Path) -> ExtractedDocument:
+    """进程池入口保持在模块顶层，兼容 macOS/Windows 的 spawn。"""
+    return PypdfExtractor()._extract_sync(pdf_path)
+
+
 class PypdfExtractor:
     """Local text-layer extraction through the optional ``pypdf`` package."""
 
     name = "pypdf"
 
-    def __init__(self) -> None:
+    def __init__(self, executor: Executor | None = None) -> None:
         self._module = None
+        self._executor = executor
 
     def _import(self):
         if self._module is None:
@@ -221,6 +228,10 @@ class PypdfExtractor:
             return "unavailable"
 
     async def extract(self, pdf_path: Path) -> ExtractedDocument:
+        if self._executor is not None:
+            return await asyncio.get_running_loop().run_in_executor(
+                self._executor, _extract_in_worker, pdf_path
+            )
         return await asyncio.to_thread(self._extract_sync, pdf_path)
 
     def _extract_sync(self, pdf_path: Path) -> ExtractedDocument:
@@ -430,13 +441,14 @@ class PdfMarkdownParser:
         mineru_model_version: str = "vlm",
         transport: httpx.AsyncBaseTransport | None = None,
         min_characters: int = 50,
+        executor: Executor | None = None,
     ) -> None:
         if extractor is not None:
             self._extractor = extractor
         elif backend not in {"auto", "pypdf", "mineru"}:
             raise ValueError(f"unknown markdown backend '{backend}'")
         elif backend == "pypdf":
-            self._extractor = PypdfExtractor()
+            self._extractor = PypdfExtractor(executor=executor)
         elif backend == "mineru":
             self._extractor = MineruExtractor(
                 api_key=mineru_api_key,
@@ -449,7 +461,7 @@ class PdfMarkdownParser:
                 model_version=mineru_model_version,
                 transport=transport,
             )
-            self._extractor = mineru if mineru.available else PypdfExtractor()
+            self._extractor = mineru if mineru.available else PypdfExtractor(executor=executor)
         self._min_characters = min_characters
 
     @property

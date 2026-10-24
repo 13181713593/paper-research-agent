@@ -10,6 +10,7 @@ dependencies.
 from __future__ import annotations
 
 import os
+from concurrent.futures import Executor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -42,7 +43,9 @@ class ProcessingComponents:
     report_writer: ReportWriter
 
 
-def build_processing_components(settings: Settings) -> ProcessingComponents:
+def build_processing_components(
+    settings: Settings, *, parser_executor: Executor | None = None
+) -> ProcessingComponents:
     """Assemble the real OA-resolve / download / parse / summarize / report set."""
     from paper_agent.adapters.full_text_processor import PdfFullTextProcessor
     from paper_agent.adapters.llm_report_writer import LlmReportWriter
@@ -64,6 +67,7 @@ def build_processing_components(settings: Settings) -> ProcessingComponents:
     parser = PdfMarkdownParser(
         backend=settings.markdown_backend,
         mineru_api_key=os.getenv("MINERU_API_KEY") or None,
+        executor=parser_executor,
     )
     processor = PdfFullTextProcessor(
         resolver=resolver,

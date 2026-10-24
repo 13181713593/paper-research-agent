@@ -73,6 +73,35 @@ def _dump_summaries_for_prompt(
     return json.dumps(entries, ensure_ascii=False, indent=2)
 
 
+def comparison_markdown(papers: Sequence[Paper], summaries: Sequence[PaperSummary]) -> str:
+    """从结构化总结生成横向对照表，不额外推断共识或实验结论。"""
+    registry = {summary.paper_id: summary for summary in summaries}
+
+    def cell(value: str) -> str:
+        text = " ".join(value.split())
+        text = text[:180] + "…" if len(text) > 180 else text
+        return text.replace("|", "\\|").replace("<", "&lt;").replace(">", "&gt;")
+
+    lines = [
+        "## 跨论文对比矩阵", "",
+        "> 以下仅归纳已有总结；表格长字段节选展示，完整内容见单篇总结。", "",
+        "| 论文 | 材料来源 | 方法 | 实验/评估 | 局限 | 引文数（未核验） |",
+        "| --- | --- | --- | --- | --- | ---: |",
+    ]
+    for paper in papers:
+        summary = registry.get(paper.paper_id)
+        if summary is None:
+            lines.append(f"| {cell(paper.title)} | 未生成总结 | — | — | — | 0 |")
+            continue
+        source = "全文" if summary.generated_from_fulltext else "仅摘要（降级）"
+        lines.append(
+            f"| {cell(paper.title)} | {source} | {cell(summary.method)} | "
+            f"{cell(summary.experiments)} | {cell('；'.join(summary.limitations) or '未明确说明')} | "
+            f"{len(summary.evidence)} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 class LlmReportWriter:
     """``ReportWriter`` implementation: LLM narrative with template fallback."""
 
@@ -144,7 +173,11 @@ class LlmReportWriter:
             title=title,
             executive_summary=payload.executive_summary.strip()
             or self._default_executive_summary(papers, summaries),
-            markdown=payload.markdown.strip() + "\n",
+            markdown=(
+                "> 说明：报告中的未来方向均为【系统推断】，不代表论文作者结论。\n\n"
+                + payload.markdown.strip() + "\n\n"
+                + comparison_markdown(papers, summaries)
+            ),
             paper_ids=[paper.paper_id for paper in papers],
             future_directions=directions,
             evidence=self._aggregate_evidence(summaries),
@@ -176,6 +209,7 @@ class LlmReportWriter:
             f"{len(summaries) - fulltext_count} 篇基于摘要（降级）。"),
             "",
         ]
+        lines.extend([comparison_markdown(papers, summaries), ""])
         for index, paper in enumerate(papers, 1):
             summary = registry.get(paper.paper_id)
             lines.extend([f"### {index}. {paper.title}", ""])

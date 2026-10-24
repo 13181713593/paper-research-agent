@@ -42,3 +42,16 @@ def build_agent(settings: Settings | None = None) -> PaperResearchAgent:
     pipeline = ResearchPipeline(deps, max_concurrency=settings.max_concurrency)
     return PaperResearchAgent(pipeline)
 
+
+def build_processing_workbench(settings: Settings | None = None):
+    """独立演示始终接入第三组真实组件，不替换其他组的检索和排序。"""
+    from paper_agent.adapters.arxiv_metadata import ArxivMetadataEnricher
+    from paper_agent.application.processing_workbench import ProcessingWorkbench
+
+    settings = settings or Settings.from_env()
+    metadata = ArxivMetadataEnricher(timeout_seconds=min(15.0, settings.request_timeout_seconds))
+    return ProcessingWorkbench(
+        lambda executor: build_processing_components(settings, parser_executor=executor),
+        metadata_enricher=metadata.enrich,
+    )
+
