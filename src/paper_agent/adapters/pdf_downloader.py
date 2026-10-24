@@ -1,6 +1,6 @@
 """Group 3: download one PDF with hard safety limits and a disk cache.
 
-Safety envelope enforced here (see ``docs/INTEGRATION_CHECKLIST.md``):
+下载安全边界（联调清单见 ``docs/API_CONTRACTS.md``）：
 
 - only ``http``/``https`` URLs and a bounded redirect chain;
 - download timeout, maximum byte budget checked against both the
