@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
@@ -122,6 +122,8 @@ class FullTextAsset(StrictModel):
     parser_version: str | None = None
     parse_quality: Annotated[float | None, Field(ge=0, le=1)] = None
     parse_error: str | None = None
+    candidate_urls: list[HttpUrl] = Field(default_factory=list)
+    attempts: list[dict[str, str]] = Field(default_factory=list)
 
 
 class CodeAsset(StrictModel):
@@ -202,7 +204,7 @@ class Paper(StrictModel):
 
 
 class ResearchIdea(StrictModel):
-    text: str = Field(min_length=10)
+    text: str = Field(min_length=1)
     preferred_languages: list[str] = Field(default_factory=lambda: ["en", "zh"])
     date_from: date | None = None
     date_to: date | None = None
@@ -210,6 +212,9 @@ class ResearchIdea(StrictModel):
     excluded_terms: list[str] = Field(default_factory=list)
     preferred_venues: list[str] = Field(default_factory=list)
     ranking_focus: list[str] = Field(default_factory=list)
+    search_terms: list[str] = Field(default_factory=list)
+    recent_from: date | None = None
+    recent_share: float = Field(default=0.7, ge=0, le=1)
 
 
 class SearchQuery(StrictModel):
@@ -217,14 +222,28 @@ class SearchQuery(StrictModel):
     query: str
     limit: int = Field(default=30, ge=1, le=200)
     filters: dict[str, Any] = Field(default_factory=dict)
+    language: str | None = None
+    strategy: str | None = None
+    sort_by: Literal["relevance", "publication_date"] = "relevance"
+    time_window: str | None = None
 
 
 class SearchPlan(StrictModel):
     intent_summary: str
     queries: list[SearchQuery] = Field(min_length=1)
     synonyms: list[str] = Field(default_factory=list)
+    query_terms: list[str] = Field(default_factory=list)
+    term_notes: dict[str, str] = Field(default_factory=dict)
     inclusion_criteria: list[str] = Field(default_factory=list)
     exclusion_criteria: list[str] = Field(default_factory=list)
+    concepts: list[str] = Field(default_factory=list)
+    source_limit: int | None = None
+    planner_mode: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    recent_from: date | None = None
+    recent_share: float = Field(default=0.7, ge=0, le=1)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class EvidenceRef(StrictModel):
@@ -260,12 +279,16 @@ class StageEvent(StrictModel):
     stage: PipelineStage
     status: ProcessingStatus
     started_at: datetime
+    scope: Literal["stage", "source", "paper"] = "stage"
+    source_name: str | None = None
+    paper_id: UUID | None = None
     finished_at: datetime | None = None
     input_count: int | None = Field(default=None, ge=0)
     output_count: int | None = Field(default=None, ge=0)
     duration_ms: int | None = Field(default=None, ge=0)
     message: str | None = None
     error_code: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class PipelineRequest(StrictModel):
@@ -289,15 +312,17 @@ class PipelineResult(StrictModel):
     stage: PipelineStage
     request: PipelineRequest
     papers: list[Paper] = Field(default_factory=list)
+    metadata_papers: list[Paper] = Field(default_factory=list)
     summaries: list[PaperSummary] = Field(default_factory=list)
     report: ResearchReport | None = None
     events: list[StageEvent] = Field(default_factory=list)
+    progress_events: list[StageEvent] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
     @property
     def total_duration_ms(self) -> int:
         """Wall-time approximation from completed stage events."""
-        return sum(event.duration_ms or 0 for event in self.events)
+        return sum(event.duration_ms or 0 for event in self.events if event.scope == "stage")
 
 
 class PipelineContract(StrictModel):

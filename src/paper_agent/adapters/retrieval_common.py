@@ -1,4 +1,5 @@
 """Pure normalization helpers; no network calls and no replacement domain models."""
+
 import re
 import unicodedata
 from urllib.parse import unquote, urlsplit
@@ -38,7 +39,6 @@ def normalize_title(value):
     value = unicodedata.normalize("NFKC", value).casefold()
     # Preserve mathematical distinctions such as C++ vs C and x^2 vs x2.
     value = "".join(
-        " " if unicodedata.category(c).startswith("P") and c not in "+=^<>" else c
-        for c in value
+        " " if unicodedata.category(c).startswith("P") and c not in "+=^<>" else c for c in value
     )
     return " ".join(value.split())

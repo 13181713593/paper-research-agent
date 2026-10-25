@@ -22,7 +22,15 @@ from paper_agent.adapters._retriever_utils import (
     parse_date,
     sanitize_query,
 )
-from paper_agent.domain.models import Author, Paper, PaperSource, SearchPlan, SourceRecord, Venue
+from paper_agent.domain.models import (
+    Author,
+    FullTextAsset,
+    Paper,
+    PaperSource,
+    SearchPlan,
+    SourceRecord,
+    Venue,
+)
 
 _API_URL = "https://api.openalex.org/works"
 
@@ -45,16 +53,31 @@ class OpenAlexRetriever:
         query = next((q for q in plan.queries if q.source == PaperSource.OPENALEX), None)
         if query is None:
             return []
-        payload = await asyncio.to_thread(self._fetch, query.query, query.limit)
+        payload = (
+            await asyncio.to_thread(
+                self._fetch, query.query, query.limit, query.filters, query.sort_by
+            )
+            if query.filters or query.sort_by != "relevance"
+            else await asyncio.to_thread(self._fetch, query.query, query.limit)
+        )
         return self._to_papers(payload)
 
-    def _fetch(self, raw_query: str, limit: int) -> Any:
+    def _fetch(self, raw_query: str, limit: int, filters=None, sort_by="relevance") -> Any:
         params = {
             "search": sanitize_query(raw_query),
             "per-page": max(1, min(limit, 200)),
         }
         if self.contact_email:
             params["mailto"] = self.contact_email
+        dates = []
+        if (filters or {}).get("date_from"):
+            dates.append("from_publication_date:" + str(filters["date_from"]))
+        if (filters or {}).get("date_to"):
+            dates.append("to_publication_date:" + str(filters["date_to"]))
+        if dates:
+            params["filter"] = ",".join(dates)
+        if sort_by == "publication_date":
+            params["sort"] = "publication_date:desc"
         return http_get_json(_API_URL, params=params, timeout=self.timeout)
 
     def _to_papers(self, payload: Any) -> list[Paper]:
@@ -79,8 +102,14 @@ class OpenAlexRetriever:
             name = (author_info.get("display_name") or "").strip()
             if not name:
                 continue
-            affiliations = [i.get("display_name") for i in authorship.get("institutions", []) if i.get("display_name")]
-            authors.append(Author(name=name, orcid=_orcid(author_info.get("orcid")), affiliations=affiliations))
+            affiliations = [
+                i.get("display_name")
+                for i in authorship.get("institutions", [])
+                if i.get("display_name")
+            ]
+            authors.append(
+                Author(name=name, orcid=_orcid(author_info.get("orcid")), affiliations=affiliations)
+            )
             institutions.extend(affiliations)
 
         publication_date = parse_date(item.get("publication_date"))
@@ -90,17 +119,31 @@ class OpenAlexRetriever:
 
         doi = normalize_doi(item.get("doi"))
         ids = item.get("ids") or {}
-        openalex_id = _openalex_id_from_url(ids.get("openalex")) or _openalex_id_from_url(item.get("id"))
+        openalex_id = _openalex_id_from_url(ids.get("openalex")) or _openalex_id_from_url(
+            item.get("id")
+        )
         oa = item.get("open_access") or {}
 
         primary_location = item.get("primary_location") or {}
         source_info = primary_location.get("source") or {}
         venue_name = source_info.get("display_name")
-        landing_page = item.get("id") or primary_location.get("landing_page_url")
+        landing_page = primary_location.get("landing_page_url") or item.get("id")
+        locations = [
+            item.get("best_oa_location") or {},
+            primary_location,
+            *(item.get("locations") or []),
+        ]
+        pdfs = list(
+            dict.fromkeys(
+                loc.get("pdf_url")
+                for loc in locations
+                if isinstance(loc, dict) and loc.get("pdf_url")
+            )
+        )
 
         abstract = _restore_abstract(item.get("abstract_inverted_index"))
         if abstract is None:
-            abstract = (item.get("abstract") or None)
+            abstract = item.get("abstract") or None
 
         bibtex = build_bibtex(
             key=make_bibtex_key(title, year),
@@ -125,6 +168,7 @@ class OpenAlexRetriever:
             citation_count=item.get("cited_by_count"),
             is_open_access=oa.get("is_oa"),
             open_access_url=(oa.get("oa_url") or None),
+            fulltext=FullTextAsset(pdf_url=pdfs[0] if pdfs else None, candidate_urls=pdfs),
             bibtex=bibtex,
             landing_page_url=landing_page,
             source_records=[

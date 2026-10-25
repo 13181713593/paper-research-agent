@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
   "mcp[cli]>=2.0,<3",
   "pydantic>=2.8,<3",
-  "streamlit>=1.40,<2",
+  "streamlit>=1.54,<2",
   "arxiv>=2.4,<3",
   "bibtexparser>=1.4,<2",
   "requests>=2.32,<3",
@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.8", "mypy>=1.13"]
 ranking = ["sentence-transformers>=5,<6"]
-processing = ["pypdf>=4,<8"]
+processing = ["pypdf>=4,<8", "fonttools>=4,<5"]
 
 [project.scripts]
 paper-agent-mcp = "paper_agent.mcp_server:main"

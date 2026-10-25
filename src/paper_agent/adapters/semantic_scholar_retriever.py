@@ -42,25 +42,47 @@ class SemanticScholarRetriever:
         query = next((q for q in plan.queries if q.source == PaperSource.SEMANTIC_SCHOLAR), None)
         if query is None:
             return []
-        payload = await asyncio.to_thread(self._fetch, query.query, query.limit)
+        payload = (
+            await asyncio.to_thread(
+                self._fetch, query.query, query.limit, query.filters, query.sort_by
+            )
+            if query.filters or query.sort_by != "relevance"
+            else await asyncio.to_thread(self._fetch, query.query, query.limit)
+        )
         return self._to_papers(payload)
 
-    def _fetch(self, raw_query: str, limit: int) -> Any:
+    def _fetch(self, raw_query: str, limit: int, filters=None, sort_by="relevance") -> Any:
         headers = {"x-api-key": self.api_key} if self.api_key else None
         # Public pool is strict (shared ~100 req/5min): start with a longer
         # backoff and keep retrying while honoring the Retry-After header.
-        return http_get_json(
-            _API_URL,
-            params={
-                "query": sanitize_query(raw_query),
-                "limit": max(1, min(limit, 100)),
-                "fields": _FIELDS,
-            },
+        params = {
+            "query": sanitize_query(raw_query),
+            "limit": max(1, min(limit, 100)),
+            "fields": _FIELDS,
+        }
+        if (filters or {}).get("date_from") or (filters or {}).get("date_to"):
+            params["publicationDateOrYear"] = (
+                f"{(filters or {}).get('date_from') or ''}:{(filters or {}).get('date_to') or ''}"
+            )
+        url = _API_URL
+        if sort_by == "publication_date":
+            url += "/bulk"
+            params.pop("limit", None)  # Bulk uses fixed server batches; take only our quota below.
+            params["sort"] = "publicationDate:desc"
+            terms = sanitize_query(raw_query).replace('"', "")
+            params["query"] = f'"{terms}"'
+        payload = http_get_json(
+            url,
+            params=params,
             headers=headers,
             timeout=self.timeout,
-            max_retries=4,
-            initial_backoff=2.0,
+            max_retries=1,
+            initial_backoff=1.0,
+            max_retry_after=5.0,
         )
+        if sort_by == "publication_date" and isinstance(payload, dict):
+            payload = {**payload, "data": payload.get("data", [])[:limit]}
+        return payload
 
     def _to_papers(self, payload: Any) -> list[Paper]:
         if not payload:
@@ -77,11 +99,7 @@ class SemanticScholarRetriever:
         if not title:
             return None
 
-        authors = [
-            Author(name=a.get("name"))
-            for a in item.get("authors", [])
-            if a.get("name")
-        ]
+        authors = [Author(name=a.get("name")) for a in item.get("authors", []) if a.get("name")]
         publication_date = parse_date(item.get("publicationDate"))
         year = item.get("year")
         if publication_date:

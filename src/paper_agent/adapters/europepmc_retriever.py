@@ -21,7 +21,15 @@ from paper_agent.adapters._retriever_utils import (
     parse_date,
     sanitize_query,
 )
-from paper_agent.domain.models import Author, Paper, PaperSource, SearchPlan, SourceRecord, Venue
+from paper_agent.domain.models import (
+    Author,
+    FullTextAsset,
+    Paper,
+    PaperSource,
+    SearchPlan,
+    SourceRecord,
+    Venue,
+)
 
 _API_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
 
@@ -36,16 +44,29 @@ class EuropePmcRetriever:
         query = next((q for q in plan.queries if q.source == PaperSource.EUROPE_PMC), None)
         if query is None:
             return []
-        payload = await asyncio.to_thread(self._fetch, query.query, query.limit)
+        payload = (
+            await asyncio.to_thread(
+                self._fetch, query.query, query.limit, query.filters, query.sort_by
+            )
+            if query.filters or query.sort_by != "relevance"
+            else await asyncio.to_thread(self._fetch, query.query, query.limit)
+        )
         return self._to_papers(payload)
 
-    def _fetch(self, raw_query: str, limit: int) -> Any:
+    def _fetch(self, raw_query: str, limit: int, filters=None, sort_by="relevance") -> Any:
         # resultType=core returns full metadata (abstract, DOI, dates) in one
         # request; the default "lite" payload would force a per-paper fetch.
+        expression = sanitize_query(raw_query)
+        if (filters or {}).get("date_from") or (filters or {}).get("date_to"):
+            start = (filters or {}).get("date_from") or "0001-01-01"
+            end = (filters or {}).get("date_to") or "9999-12-31"
+            expression = f"({expression}) AND FIRST_PDATE:[{start} TO {end}]"
+        if sort_by == "publication_date":
+            expression += " sort_date:y"
         return http_get_json(
             _API_URL,
             params={
-                "query": sanitize_query(raw_query),
+                "query": expression,
                 "format": "json",
                 "resultType": "core",
                 "pageSize": max(1, min(limit, 100)),
@@ -125,6 +146,11 @@ class EuropePmcRetriever:
             citation_count=cited_by,
             is_open_access=item.get("isOpenAccess") == "Y",
             open_access_url=landing_page if item.get("isOpenAccess") == "Y" else None,
+            fulltext=FullTextAsset(
+                pdf_url=f"https://europepmc.org/articles/{pmcid}?pdf=render"
+                if pmcid and item.get("isOpenAccess") == "Y"
+                else None
+            ),
             bibtex=bibtex,
             landing_page_url=landing_page,
             source_records=[

@@ -34,7 +34,7 @@ def build_retrieval_dependencies(settings: Settings | None = None) -> PipelineDe
     )
     return replace(
         build_demo_dependencies(),
-        query_planner=HeuristicQueryPlanner(concept_extractor=extractor),
+        query_planner=HeuristicQueryPlanner(concept_extractor=extractor, expand_queries=True),
         retrievers=[
             ArxivRetriever(config=ArxivSearchConfig(max_retries=2)),
             CrossrefRetriever(),

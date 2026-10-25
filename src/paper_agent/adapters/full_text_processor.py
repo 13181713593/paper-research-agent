@@ -52,6 +52,14 @@ class PdfFullTextProcessor:
         self._markdown_dir = Path(work_dir) / "markdown"
 
     async def process(self, paper: Paper) -> Paper:
+        try:
+            async with asyncio.timeout(90):
+                return await self._process(paper)
+        except TimeoutError:
+            paper.fulltext.parse_error = "全文定位、下载和解析超过90秒预算，保留元数据。"
+            raise
+
+    async def _process(self, paper: Paper) -> Paper:
         """Process one paper, updating its ``fulltext`` fields in place.
 
         Short-circuits when the paper already carries an existing Markdown
@@ -67,17 +75,52 @@ class PdfFullTextProcessor:
         existing_markdown = paper.fulltext.markdown_path
         if existing_markdown and Path(existing_markdown).exists():
             return paper
-        resolved = await self._resolver.resolve(paper)
         try:
-            pdf_path = await self._downloader.download(resolved, self._pdf_dir)
-        except Exception:
-            paper.fulltext.access_status = AccessStatus.UNAVAILABLE
+            resolved = await self._resolver.resolve(paper)
+        except Exception as exc:
+            paper.fulltext.parse_error = f"{type(exc).__name__}: {exc}"
             raise
+        urls = list(
+            dict.fromkeys(
+                [
+                    str(resolved.fulltext.pdf_url),
+                    *(str(u) for u in resolved.fulltext.candidate_urls),
+                ]
+            )
+        )
+        urls = [url for url in urls if url.startswith(("https://", "http://"))]
+        discovered = False
+        pdf_path = None
+        last_error = None
+        index = 0
+        while index < min(len(urls), 4):
+            url = urls[index]
+            index += 1
+            resolved.fulltext.pdf_url = url
+            try:
+                pdf_path = await self._downloader.download(resolved, self._pdf_dir)
+                paper.fulltext.attempts.append(
+                    {"stage": "download", "url": url, "status": "succeeded"}
+                )
+                break
+            except Exception as exc:  # noqa: BLE001 - retain failure and try another lawful copy
+                last_error = exc
+                paper.fulltext.attempts.append(
+                    {"stage": "download", "url": url, "status": "failed", "error": str(exc)[:400]}
+                )
+                if index == len(urls) and not discovered and hasattr(self._resolver, "discover"):
+                    discovered = True
+                    await self._resolver.discover(paper)
+                    urls.extend(str(u) for u in paper.fulltext.candidate_urls if str(u) not in urls)
+        if pdf_path is None:
+            paper.fulltext.access_status = AccessStatus.UNAVAILABLE
+            paper.fulltext.parse_error = f"{type(last_error).__name__}: {last_error}"
+            if last_error:
+                raise last_error
+            raise ValueError("No usable PDF candidate URL")
         pdf_path = Path(pdf_path)
         try:
-            markdown_path, quality = await self._parser.parse(
-                pdf_path, self._markdown_dir
-            )
+            markdown_path, quality = await self._parser.parse(pdf_path, self._markdown_dir)
         except Exception as exc:
             paper.fulltext.parse_error = f"{type(exc).__name__}: {exc}"
             raise

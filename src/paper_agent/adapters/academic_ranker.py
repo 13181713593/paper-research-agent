@@ -9,9 +9,10 @@ import re
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, datetime
 from pathlib import Path
 
+from paper_agent.adapters.metadata_relevance import MetadataRelevance
 from paper_agent.domain.models import (
     CodeAvailability,
     Paper,
@@ -19,6 +20,7 @@ from paper_agent.domain.models import (
     ResearchIdea,
     ScoreBreakdown,
 )
+from paper_agent.domain.publication_policy import reserve_recent
 
 logger = logging.getLogger(__name__)
 PROMPT_VERSION = "academic-intent-v1"
@@ -229,6 +231,7 @@ class AcademicPreRanker:
         if limit < 1:
             raise ValueError("limit must be positive")
         intent = await self.rewriter.rewrite(idea)
+        relevance_model = MetadataRelevance(intent, papers)
         results = []
         for paper in papers:
             text = _metadata(paper)
@@ -236,13 +239,13 @@ class AcademicPreRanker:
             screening = intent.model_copy(update={"required_terms": []})
             if not _eligible(screening, paper, text):
                 continue
-            relevance = 0.7 * _coverage(intent.text, text) + 0.3 * _coverage(
-                intent.text, paper.title
-            )
+            relevance, matched_terms, anchor = relevance_model.score(paper)
+            if relevance < 0.08 or (not anchor and not intent.required_terms):
+                continue
             required = sum(_contains(t, text) for t in intent.required_terms)
             match = required / len(intent.required_terms) if intent.required_terms else relevance
             recency, venue, citations = _signals(
-                intent, paper, self.config.reference_year or date.today().year
+                intent, paper, self.config.reference_year or datetime.now(UTC).year
             )
             result = paper.model_copy(deep=True)
             result.scores = ScoreBreakdown(
@@ -251,16 +254,22 @@ class AcademicPreRanker:
                 recency=recency,
                 venue_quality=venue,
                 citation_signal=citations,
-                final=0.8 * relevance
-                + 0.1 * match
-                + 0.05 * recency
-                + 0.03 * venue
-                + 0.02 * citations,
+                final=0.9 * relevance
+                + 0.06 * match
+                + relevance * (0.02 * recency + 0.01 * venue + 0.01 * citations),
                 formula_version="academic-v1-pre",
-                explanation=f"Metadata lexical ranking; prompt={PROMPT_VERSION}; focus={intent.ranking_focus}",
+                explanation=(
+                    f"双语主题匹配 + 标题加权 BM25；命中={matched_terms}; "
+                    f"主题相关性={relevance:.3f}; 年份与引用仅作相关文献间的辅助信号"
+                ),
             )
             results.append(result)
-        return sorted(results, key=lambda p: p.scores.final or 0, reverse=True)[:limit]
+        return reserve_recent(
+            sorted(results, key=lambda p: p.scores.final or 0, reverse=True),
+            limit,
+            intent.recent_from,
+            intent.recent_share,
+        )
 
 
 class AcademicFinalRanker(AcademicPreRanker):
@@ -272,8 +281,12 @@ class AcademicFinalRanker(AcademicPreRanker):
         if limit < 1:
             raise ValueError("limit must be positive")
         intent = await self.rewriter.rewrite(idea)
+        relevance_model = MetadataRelevance(intent, papers)
         candidates = []
         for paper in papers:
+            relevance, _, anchor = relevance_model.score(paper)
+            if relevance < 0.08 or (not anchor and not intent.required_terms):
+                continue
             excerpt, quality, source = await asyncio.to_thread(_evidence, paper, intent)
             passage = f"{_metadata(paper)}\nEvidence:\n{excerpt}"
             if _eligible(intent, paper, passage):
@@ -285,7 +298,7 @@ class AcademicFinalRanker(AcademicPreRanker):
         )
         results = []
         for index, (paper, passage, quality, source) in enumerate(candidates):
-            lexical = _coverage(intent.text, passage)
+            lexical, _, _ = relevance_model.score(paper)
             relevance = scores[index] if scores is not None else lexical
             match = (
                 sum(_contains(t, passage) for t in intent.required_terms)
@@ -297,7 +310,7 @@ class AcademicFinalRanker(AcademicPreRanker):
                 code_match = float(paper.code.status == CodeAvailability.OPEN_SOURCE)
                 match = 0.8 * match + 0.2 * code_match
             recency, venue, citations = _signals(
-                intent, paper, self.config.reference_year or date.today().year
+                intent, paper, self.config.reference_year or datetime.now(UTC).year
             )
             weights = [0.45, 0.25, 0.15, 0.07, 0.05, 0.03]
             for focus, slot in [("recency", 3), ("venue", 4), ("citations", 5)]:
@@ -311,6 +324,7 @@ class AcademicFinalRanker(AcademicPreRanker):
                     weights, [relevance, match, evidence, recency, venue, citations], strict=True
                 )
             )
+            total *= min(1.0, lexical * 2)
             result = paper.model_copy(deep=True)
             result.scores = ScoreBreakdown(
                 lexical=lexical,
@@ -330,4 +344,9 @@ class AcademicFinalRanker(AcademicPreRanker):
                 ),
             )
             results.append(result)
-        return sorted(results, key=lambda p: p.scores.final or 0, reverse=True)[:limit]
+        return reserve_recent(
+            sorted(results, key=lambda p: p.scores.final or 0, reverse=True),
+            limit,
+            intent.recent_from,
+            intent.recent_share,
+        )

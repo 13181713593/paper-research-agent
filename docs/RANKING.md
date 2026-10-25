@@ -5,7 +5,7 @@
 ## 两级排序
 
 - `AcademicIntentRewriter` 保留原始问题，使用中英文规则提取时间、引用、venue、代码侧重。明确的 `exclude "term"` 或 `排除“术语”` 会提取为排除条件；已有结构化约束保留。这是规则实现，并未调用 LLM。
-- `AcademicPreRanker` 只读标题、摘要、关键词，计算词项覆盖率，取全文处理候选池 N。排除撤稿、排除词和日期范围外论文；必需词延后到最终排序检查，以免错过仅在全文出现的术语。
+- `AcademicPreRanker` 只读标题、摘要、关键词，结合双语任务词、标题权重和候选集 BM25 计算相关性，取全文处理候选池 N。核心对象/任务未命中的条目会被过滤，避免通用词命中造成误选。排除撤稿、排除词和日期范围外论文；必需词延后到最终排序检查，以免错过仅在全文出现的术语。
 - `AcademicEvidenceVerifier` 尝试读取实际 Markdown 文件；只有路径而没有文件时回退摘要。返回证据可用性/解析质量分数。
 - `AcademicFinalRanker` 选择问题相关段落，结合元数据执行 CrossEncoder 重排，检查必需词并取 Top-k。没有模型或模型失败时回退词项覆盖率，解释中明确记录原因。词项回退不能替代语义模型，尤其对跨语言或同义表达有限。
 
@@ -13,7 +13,9 @@ CrossEncoder 查询由 `build_ranking_prompt()` 生成，包含原始问题、�
 
 ## 默认分数
 
-预排序：`0.80 lexical + 0.10 intent + 0.05 recency + 0.03 venue + 0.02 citations`。
+预排序：`0.90 relevance + 0.06 intent + relevance * (0.02 recency + 0.01 venue + 0.01 citations)`。
+
+`relevance` 由双语词典、短语覆盖、标题加权和候选集 BM25 组成；查询规划的改写概念也参与匹配。标题核心短语优先于泛化单词。分数低于 0.08 或缺少任务锚点的条目不会为了凑够数量进入结果。此方法仍是轻量文本匹配，不等价于语义模型；陌生领域和多约束长问题仍需固定查询集与人工标注评测。
 
 最终排序：`0.45 reranker_or_lexical + 0.25 intent + 0.15 evidence + 0.07 recency + 0.05 venue + 0.03 citations`。
 

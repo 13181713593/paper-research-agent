@@ -41,7 +41,7 @@ FULLTEXT = "# 中文论文\n\n## 方法\n这是真实解析产物的测试正文
 def paper(tmp_path):
     markdown = tmp_path / "fulltext" / "markdown" / "paper.md"
     markdown.parent.mkdir(parents=True)
-    markdown.write_text(FULLTEXT, encoding="utf-8")
+    markdown.write_text(FULLTEXT, encoding="utf-8", newline="")
     result = Paper(
         title="测试论文：下载与总结",
         authors=[Author(name="测试作者")],
@@ -116,11 +116,16 @@ def test_outside_directory_and_symlink_are_not_downloadable(paper, tmp_path):
     outside.write_text("不得导出的外部文件", encoding="utf-8")
     paper.fulltext.markdown_path = str(outside)
     assert load_paper_markdown(paper, root) is None
-    link = root / "linked.md"
-    link.symlink_to(outside)
-    paper.fulltext.markdown_path = str(link)
-    assert load_paper_markdown(paper, root) is None
     paper.fulltext.markdown_path = str(root / ".." / "private.md")
+    assert load_paper_markdown(paper, root) is None
+    link = root / "linked.md"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows 未授予创建符号链接权限，外部路径和路径穿越检查已执行")
+        raise
+    paper.fulltext.markdown_path = str(link)
     assert load_paper_markdown(paper, root) is None
 
 
@@ -232,6 +237,7 @@ def test_ui_generates_three_download_types_without_regeneration(ui, result):
         "综合报告",
         "性能对比",
         "运行审计",
+        "全部文献元数据",
     ]
     paper_call = download_calls(download, "下载论文全文 Markdown")[0]
     assert paper_call.args[1] == FULLTEXT
@@ -251,12 +257,15 @@ def test_ui_generates_three_download_types_without_regeneration(ui, result):
     assert agent.research.await_count == 1
 
 
-@pytest.mark.parametrize("mode,description", [
-    ("demo", "全部使用离线演示组件"),
-    ("retrieval", "排序、全文处理、总结和报告仍为演示组件"),
-    ("ranking", "检索、全文处理和总结仍为演示组件"),
-    ("production", "五源真实检索 → 去重 → 第二组排序 → 第三组全文处理"),
-])
+@pytest.mark.parametrize(
+    "mode,description",
+    [
+        ("demo", "全部使用离线演示组件"),
+        ("retrieval", "排序、全文处理、总结和报告仍为演示组件"),
+        ("ranking", "检索、全文处理和总结仍为演示组件"),
+        ("production", "五源真实检索 → 去重 → 第二组排序 → 第三组全文处理"),
+    ],
+)
 def test_ui_describes_actual_mode(ui, monkeypatch, mode, description):
     app, _, _ = ui
     monkeypatch.setenv("PAPER_AGENT_ENV", mode)

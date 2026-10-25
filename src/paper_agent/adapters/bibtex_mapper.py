@@ -1,4 +1,5 @@
 """Convert exactly one BibTeX entry using explicit, auditable provider metadata."""
+
 from __future__ import annotations
 
 import hashlib
@@ -39,7 +40,7 @@ def _decode(value):
 
     def keep(match):
         maths.append(match.group(0))
-        return f"MATHPLACEHOLDER{len(maths)-1}END"
+        return f"MATHPLACEHOLDER{len(maths) - 1}END"
 
     value = re.sub(r"\$[^$]*\$", keep, str(value))
     value = latex_to_unicode(value)
@@ -59,7 +60,7 @@ def _author_tokens(value):
         elif token == "}":
             depth -= 1
         elif depth == 0:
-            yield value[start:m.start()].strip()
+            yield value[start : m.start()].strip()
             start = m.end()
     yield value[start:].strip()
 
@@ -75,7 +76,9 @@ def _authors(value):
             name = _decode(token)
         else:
             parts = splitname(token, strict_mode=False)
-            name = _decode(" ".join(parts.get("first", []) + parts.get("von", []) + parts.get("last", [])))
+            name = _decode(
+                " ".join(parts.get("first", []) + parts.get("von", []) + parts.get("last", []))
+            )
             if parts.get("jr"):
                 name += ", " + (_decode(" ".join(parts["jr"])) or "")
         if name:
@@ -91,7 +94,10 @@ def _json_default(value):
 
 class BibTexMapper:
     async def to_paper(
-        self, bibtex: str, *, source: str,
+        self,
+        bibtex: str,
+        *,
+        source: str,
         supplemental_metadata: dict[str, Any] | None = None,
     ) -> Paper:
         try:
@@ -109,9 +115,9 @@ class BibTexMapper:
         # Crossref exports full unquoted month names (month=June), while the
         # parser only predefines abbreviations. Keep raw BibTeX untouched;
         # explicit @string definitions in the input can still override these.
-        parser.bib_database.strings.update({
-            month.casefold(): month for month in list(parser.bib_database.strings.values())
-        })
+        parser.bib_database.strings.update(
+            {month.casefold(): month for month in list(parser.bib_database.strings.values())}
+        )
         parser.ignore_nonstandard_types = False
         parser.homogenize_fields = False
         database = bibtexparser.loads(bibtex, parser=parser)
@@ -164,7 +170,9 @@ class BibTexMapper:
                 diagnose("publication_date", date_value)
         if published:
             if year is not None and year != published.year:
-                conflicts.append(f"year: BibTeX/metadata {year}; full date {published}; chose date year")
+                conflicts.append(
+                    f"year: BibTeX/metadata {year}; full date {published}; chose date year"
+                )
             year = published.year
 
         authors = _authors(entry.get("author"))
@@ -184,7 +192,11 @@ class BibTexMapper:
         doi = normalize_doi(doi_value)
         if text(doi_value) and not doi:
             diagnose("doi", doi_value)
-        eprint = entry.get("eprint") if provider == PaperSource.ARXIV or entry.get("archiveprefix", "").lower() == "arxiv" else None
+        eprint = (
+            entry.get("eprint")
+            if provider == PaperSource.ARXIV or entry.get("archiveprefix", "").lower() == "arxiv"
+            else None
+        )
         arxiv_value = choose("arxiv_id", eprint)
         arxiv_id = normalize_arxiv(arxiv_value)
         if text(arxiv_value) and not arxiv_id:
@@ -195,8 +207,10 @@ class BibTexMapper:
             venue = Venue(
                 name=_decode(entry.get("journal") or entry.get("booktitle")),
                 venue_type="journal" if entry.get("journal") else "conference",
-                publisher=_decode(entry.get("publisher")), volume=text(entry.get("volume")),
-                issue=text(entry.get("number")), pages=text(entry.get("pages")),
+                publisher=_decode(entry.get("publisher")),
+                volume=text(entry.get("volume")),
+                issue=text(entry.get("number")),
+                pages=text(entry.get("pages")),
             )
         if extra.get("venue") is not None:
             supplemental_venue = Venue.model_validate(extra["venue"])
@@ -209,14 +223,20 @@ class BibTexMapper:
                     if incoming is None:
                         continue
                     if current is not None and incoming != current:
-                        conflicts.append(f"venue.{field}: conflicting BibTeX and supplemental values")
+                        conflicts.append(
+                            f"venue.{field}: conflicting BibTeX and supplemental values"
+                        )
                         # Keep an explicit journal/booktitle distinction even when
                         # an incomplete or conflicting provider record is supplied.
                         if field == "venue_type":
                             continue
                     setattr(venue, field, incoming)
         abstract = text(choose("abstract")) or _decode(entry.get("abstract"))
-        if extra.get("abstract") and entry.get("abstract") and _decode(entry["abstract"]) != abstract:
+        if (
+            extra.get("abstract")
+            and entry.get("abstract")
+            and _decode(entry["abstract"]) != abstract
+        ):
             conflicts.append("abstract: chose provider supplemental text; original BibTeX retained")
         source_id = text(extra.get("source_id")) or arxiv_id or doi
         if not source_id:
@@ -237,15 +257,21 @@ class BibTexMapper:
             raw = {"_provider_payload": raw}
         raw["_bibtex"] = bibtex
         raw["_supplemental"] = {k: v for k, v in extra.items() if k != "raw_metadata"}
-        landing = url("landing_page_url", choose("landing_page_url", choose("source_url", entry.get("url"))))
+        landing = url(
+            "landing_page_url", choose("landing_page_url", choose("source_url", entry.get("url")))
+        )
         pdf = url("pdf_url", extra.get("pdf_url"))
-        keywords = extra.get("keywords") or [v.strip() for v in entry.get("keywords", "").split(",") if v.strip()]
+        keywords = extra.get("keywords") or [
+            v.strip() for v in entry.get("keywords", "").split(",") if v.strip()
+        ]
         explicit_institutions = extra.get("institutions")
         if explicit_institutions is None:
             explicit_institutions = []
         if not isinstance(explicit_institutions, list):
             raise BibTexMappingError("institutions must be a list or None")
-        institutions = list(dict.fromkeys(explicit_institutions + [v for a in authors for v in a.affiliations]))
+        institutions = list(
+            dict.fromkeys(explicit_institutions + [v for a in authors for v in a.affiliations])
+        )
         scalar = {}
         for name in ("openalex_id", "semantic_scholar_id", "pmid", "language"):
             scalar[name] = text(extra.get(name))
@@ -255,23 +281,49 @@ class BibTexMapper:
             if value is not None and not isinstance(value, bool):
                 diagnose(name, value)
         citations = extra.get("citation_count")
-        if citations is not None and (isinstance(citations, bool) or not isinstance(citations, int) or citations < 0):
+        if citations is not None and (
+            isinstance(citations, bool) or not isinstance(citations, int) or citations < 0
+        ):
             diagnose("citation_count", citations)
             citations = None
         status = extra.get("publication_status")
         if status is None:
-            status = PublicationStatus.PREPRINT if provider == PaperSource.ARXIV else PublicationStatus.UNKNOWN
+            status = (
+                PublicationStatus.PREPRINT
+                if provider == PaperSource.ARXIV
+                else PublicationStatus.UNKNOWN
+            )
         return Paper(
             paper_id=uuid5(NAMESPACE_URL, f"paper-agent:{provider}:{source_id}"),
-            title=title, normalized_title=normalize_title(title), authors=authors,
-            institutions=institutions, year=year, publication_date=published,
-            publication_status=status, venue=venue, abstract=abstract, keywords=keywords,
-            comments=text(choose("comments", entry.get("note"))), doi=doi, arxiv_id=arxiv_id,
-            bibtex=bibtex, citation_count=citations, landing_page_url=landing,
+            title=title,
+            normalized_title=normalize_title(title),
+            authors=authors,
+            institutions=institutions,
+            year=year,
+            publication_date=published,
+            publication_status=status,
+            venue=venue,
+            abstract=abstract,
+            keywords=keywords,
+            comments=text(choose("comments", entry.get("note"))),
+            doi=doi,
+            arxiv_id=arxiv_id,
+            bibtex=bibtex,
+            citation_count=citations,
+            landing_page_url=landing,
             open_access_url=url("open_access_url", extra.get("open_access_url")),
-            fulltext=FullTextAsset(pdf_url=pdf, landing_page_url=landing, version=version.group() if version else None),
-            source_records=[SourceRecord(source=provider, source_id=source_id,
-                source_url=url("source_url", extra.get("source_url")) or landing,
-                retrieved_at=retrieved, raw_metadata=raw)],
-            metadata_conflicts=conflicts, **scalar,
+            fulltext=FullTextAsset(
+                pdf_url=pdf, landing_page_url=landing, version=version.group() if version else None
+            ),
+            source_records=[
+                SourceRecord(
+                    source=provider,
+                    source_id=source_id,
+                    source_url=url("source_url", extra.get("source_url")) or landing,
+                    retrieved_at=retrieved,
+                    raw_metadata=raw,
+                )
+            ],
+            metadata_conflicts=conflicts,
+            **scalar,
         )

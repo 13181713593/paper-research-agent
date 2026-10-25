@@ -56,4 +56,3 @@ class PaperResearchAgent:
                 "Final ranking occurs only after full-text or explicit abstract fallback verification.",
             ],
         )
-

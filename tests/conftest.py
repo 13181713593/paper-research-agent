@@ -18,19 +18,21 @@ def isolated_runtime(tmp_path, monkeypatch, request):
     if not paid_smoke:
         for key in tuple(os.environ):
             if key.startswith("PAPER_AGENT_") or key in {
-                "OPENAI_API_KEY", "MINERU_API_KEY", "SEMANTIC_SCHOLAR_API_KEY",
-                "UNPAYWALL_EMAIL", "CROSSREF_MAILTO",
+                "OPENAI_API_KEY",
+                "MINERU_API_KEY",
+                "SEMANTIC_SCHOLAR_API_KEY",
+                "UNPAYWALL_EMAIL",
+                "CROSSREF_MAILTO",
             }:
                 monkeypatch.delenv(key)
         for key in ("OPENAI_API_KEY", "PAPER_AGENT_LLM_API_KEY", "MINERU_API_KEY"):
             monkeypatch.setenv(key, "")
-    network_smoke = (
-        os.getenv("RUN_NETWORK_SMOKE") == "1"
-        and request.node.name in {
-            "test_public_arxiv_workbench_smoke", "test_production_live_smoke",
-        }
-    )
+    network_smoke = os.getenv("RUN_NETWORK_SMOKE") == "1" and request.node.name in {
+        "test_public_arxiv_workbench_smoke",
+        "test_production_live_smoke",
+    }
     if not paid_smoke and not network_smoke:
+
         def no_network(*args, **kwargs):
             raise AssertionError("离线测试禁止真实网络；请注入 mock transport")
 

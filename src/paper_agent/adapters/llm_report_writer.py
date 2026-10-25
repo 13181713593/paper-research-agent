@@ -54,9 +54,7 @@ def _label_inference(direction: str) -> str:
     return f"{INFERENCE_LABEL}{text}"
 
 
-def _dump_summaries_for_prompt(
-    papers: Sequence[Paper], summaries: Sequence[PaperSummary]
-) -> str:
+def _dump_summaries_for_prompt(papers: Sequence[Paper], summaries: Sequence[PaperSummary]) -> str:
     """Compact JSON view of the summaries used in the report prompt."""
     registry = {summary.paper_id: summary for summary in summaries}
     entries = []
@@ -83,8 +81,10 @@ def comparison_markdown(papers: Sequence[Paper], summaries: Sequence[PaperSummar
         return text.replace("|", "\\|").replace("<", "&lt;").replace(">", "&gt;")
 
     lines = [
-        "## 跨论文对比矩阵", "",
-        "> 以下仅归纳已有总结；表格长字段节选展示，完整内容见单篇总结。", "",
+        "## 跨论文对比矩阵",
+        "",
+        "> 以下仅归纳已有总结；表格长字段节选展示，完整内容见单篇总结。",
+        "",
         "| 论文 | 材料来源 | 方法 | 实验/评估 | 局限 | 引文数（未核验） |",
         "| --- | --- | --- | --- | --- | ---: |",
     ]
@@ -148,10 +148,10 @@ class LlmReportWriter:
         user = (
             f"研究想法：{idea.text}\n\n"
             f"论文总结（JSON）：\n{_dump_summaries_for_prompt(papers, summaries)}\n\n"
-            "请输出如下 JSON：{\"title\": 报告标题, \"executive_summary\": 一段总体概述, "
-            "\"markdown\": 完整 Markdown 报告（含研究想法、逐篇要点、共识与分歧、"
+            '请输出如下 JSON：{"title": 报告标题, "executive_summary": 一段总体概述, '
+            '"markdown": 完整 Markdown 报告（含研究想法、逐篇要点、共识与分歧、'
             "未来方向（系统推断，非论文结论）等章节）, "
-            "\"future_directions\": [未来方向条目（每条都会被标注为系统推断）]}"
+            '"future_directions": [未来方向条目（每条都会被标注为系统推断）]}'
         )
         raw = await self._client.complete(  # type: ignore[union-attr]
             [
@@ -165,9 +165,7 @@ class LlmReportWriter:
             raise ValueError("LLM report payload has empty markdown")
         title = payload.title.strip() or self._default_title(idea)
         directions = [
-            _label_inference(item)
-            for item in payload.future_directions
-            if item and item.strip()
+            _label_inference(item) for item in payload.future_directions if item and item.strip()
         ]
         return ResearchReport(
             title=title,
@@ -175,7 +173,8 @@ class LlmReportWriter:
             or self._default_executive_summary(papers, summaries),
             markdown=(
                 "> 说明：报告中的未来方向均为【系统推断】，不代表论文作者结论。\n\n"
-                + payload.markdown.strip() + "\n\n"
+                + payload.markdown.strip()
+                + "\n\n"
                 + comparison_markdown(papers, summaries)
             ),
             paper_ids=[paper.paper_id for paper in papers],
@@ -196,8 +195,10 @@ class LlmReportWriter:
         lines = [
             f"# {self._default_title(idea)}",
             "",
-            ("> 生成模式：模板合成（未配置 LLM 或 LLM 不可用）；"
-            "所有事实来自论文总结与其证据引用。"),
+            (
+                "> 生成模式：模板合成（未配置 LLM 或 LLM 不可用）；"
+                "所有事实来自论文总结与其证据引用。"
+            ),
             "",
             "## 研究想法",
             "",
@@ -205,8 +206,10 @@ class LlmReportWriter:
             "",
             "## 论文概览",
             "",
-            (f"共 {len(papers)} 篇论文；{fulltext_count} 篇总结基于全文，"
-            f"{len(summaries) - fulltext_count} 篇基于摘要（降级）。"),
+            (
+                f"共 {len(papers)} 篇论文；{fulltext_count} 篇总结基于全文，"
+                f"{len(summaries) - fulltext_count} 篇基于摘要（降级）。"
+            ),
             "",
         ]
         lines.extend([comparison_markdown(papers, summaries), ""])

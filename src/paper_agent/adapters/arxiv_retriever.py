@@ -4,6 +4,7 @@ The public ``arxiv`` package is synchronous and exposes a lazy generator.  The
 adapter keeps both the request and generator iteration off the event loop, then
 maps every result through the shared BibTeX mapper.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -59,7 +60,7 @@ class ArxivSearchConfig:
     max_retries: int = 2
     timeout_connect: float = 10.0
     timeout_read: float = 30.0
-    empty_results: str = "error"
+    empty_results: str = "return"
     rate_limit_backoff: float = 30.0
     max_retry_wait: float = 120.0
 
@@ -74,8 +75,13 @@ class ArxivSearchConfig:
             raise ValueError("timeouts must be positive")
         if self.empty_results not in {"error", "return"}:
             raise ValueError("empty_results must be 'error' or 'return'")
-        for name in ("delay_seconds", "timeout_connect", "timeout_read",
-                     "rate_limit_backoff", "max_retry_wait"):
+        for name in (
+            "delay_seconds",
+            "timeout_connect",
+            "timeout_read",
+            "rate_limit_backoff",
+            "max_retry_wait",
+        ):
             if not math.isfinite(getattr(self, name)):
                 raise ValueError(f"{name} must be finite")
         if self.rate_limit_backoff < 3:
@@ -184,7 +190,11 @@ class ArxivRetriever:
         seen: set[str] = set()
         for query in queries:
             search_query = self._build_query(query)
-            rows = await self._fetch(search_query, query.limit)
+            rows = (
+                await self._fetch(search_query, query.limit, query.sort_by)
+                if query.sort_by != "relevance"
+                else await self._fetch(search_query, query.limit)
+            )
             if not rows:
                 if self.config.empty_results == "return":
                     continue
@@ -194,13 +204,17 @@ class ArxivRetriever:
                     paper = await self._map_result(row)
                     # arXiv IDs are the authoritative identity for this source;
                     # DOI is a fallback for records where arXiv omitted it.
-                    identities = [paper.arxiv_id] if paper.arxiv_id else ([paper.doi] if paper.doi else [])
+                    identities = (
+                        [paper.arxiv_id] if paper.arxiv_id else ([paper.doi] if paper.doi else [])
+                    )
                     if identities and identities[0] in seen:
                         continue
                     seen.update(identities)
                     output.append(paper)
                 except BibTexMappingError as exc:
-                    raise ProviderUnavailableError(f"arXiv returned malformed metadata: {exc}") from exc
+                    raise ProviderUnavailableError(
+                        f"arXiv returned malformed metadata: {exc}"
+                    ) from exc
         return output
 
     def _build_query(self, query: SearchQuery) -> str:
@@ -219,8 +233,7 @@ class ArxivRetriever:
         # Standard single-word form avoids unnecessary phrase quoting; actual
         # phrases and punctuation still need quotes to preserve their meaning.
         expression = " AND ".join(
-            f"all:{term}" if re.fullmatch(r"\w+", term)
-            else f'all:"{term.replace(chr(34), "")}"'
+            f"all:{term}" if re.fullmatch(r"\w+", term) else f'all:"{term.replace(chr(34), "")}"'
             for term in terms
         )
         result = f"({expression})" if len(terms) > 1 else expression
@@ -234,7 +247,9 @@ class ArxivRetriever:
         if date_from and date_to and date_from > date_to:
             raise ProviderUnavailableError("date_from must not be after date_to")
         if date_from or date_to:
-            result += f" AND submittedDate:[{date_from or '000101010000'} TO {date_to or '999912312359'}]"
+            result += (
+                f" AND submittedDate:[{date_from or '000101010000'} TO {date_to or '999912312359'}]"
+            )
         for term in filters.get("excluded_terms") or []:
             result += f' ANDNOT all:"{self._term(term)}"'
         return result
@@ -261,8 +276,15 @@ class ArxivRetriever:
         except (TypeError, ValueError) as exc:
             raise ProviderUnavailableError(f"invalid {name}: {value!r}") from exc
 
-    async def _fetch(self, query: str, limit: int) -> list[Any]:
-        search = arxiv.Search(query=query, max_results=limit)
+    async def _fetch(self, query: str, limit: int, sort_by="relevance") -> list[Any]:
+        search = arxiv.Search(
+            query=query,
+            max_results=limit,
+            sort_by=arxiv.SortCriterion.SubmittedDate
+            if sort_by == "publication_date"
+            else arxiv.SortCriterion.Relevance,
+            sort_order=arxiv.SortOrder.Descending,
+        )
         attempts = self.config.max_retries + 1
         last_error: Exception | None = None
         for attempt in range(attempts):
@@ -319,9 +341,20 @@ class ArxivRetriever:
 
     @staticmethod
     def _retryable(exc: Exception) -> bool:
-        return isinstance(exc, (TimeoutError, requests.Timeout, requests.ConnectionError,
-                                arxiv.UnexpectedEmptyPageError)) or getattr(exc, "status", None) in {
-            429, 500, 502, 503, 504,
+        return isinstance(
+            exc,
+            (
+                TimeoutError,
+                requests.Timeout,
+                requests.ConnectionError,
+                arxiv.UnexpectedEmptyPageError,
+            ),
+        ) or getattr(exc, "status", None) in {
+            429,
+            500,
+            502,
+            503,
+            504,
         }
 
     @staticmethod
@@ -368,20 +401,27 @@ class ArxivRetriever:
             "doi": doi,
             "pdf_url": pdf_url,
             "comments": self._value(result, "comment"),
-            "venue": {"name": self._value(result, "journal_ref")} if self._value(result, "journal_ref") else None,
+            "venue": {"name": self._value(result, "journal_ref")}
+            if self._value(result, "journal_ref")
+            else None,
             "raw_metadata": self._raw_result(result),
         }
         metadata = {key: value for key, value in metadata.items() if value is not None}
-        return await self.mapper.to_paper(bib, source=PaperSource.ARXIV.value, supplemental_metadata=metadata)
+        return await self.mapper.to_paper(
+            bib, source=PaperSource.ARXIV.value, supplemental_metadata=metadata
+        )
 
     @classmethod
     def _export_bibtex(cls, result, arxiv_id, source_url, authors) -> str:
         """The SDK has no BibTeX exporter; serialize only available API fields."""
+
         def latex_text(value):
             # Preserve math/TeX commands, escape bare text punctuation for citations.
             parts = re.split(r"(\$[^$]*\$)", " ".join(str(value).split()))
-            return "".join(part if i % 2 else re.sub(r"(?<!\\)([&%#_])", r"\\\1", part)
-                           for i, part in enumerate(parts))
+            return "".join(
+                part if i % 2 else re.sub(r"(?<!\\)([&%#_])", r"\\\1", part)
+                for i, part in enumerate(parts)
+            )
 
         entry = {
             "ENTRYTYPE": "misc",

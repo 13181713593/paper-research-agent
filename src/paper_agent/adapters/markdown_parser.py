@@ -158,9 +158,7 @@ def score_parse_quality(text: str, page_count: int | None = None) -> float:
         coverage = min(1.0, characters / 6000)
     found = {name for name in split_sections(text) if name in _STRUCTURE_SECTIONS}
     structure = min(1.0, len(found) / 4)
-    garbage_count = text.count("\ufffd") + len(
-        re.findall(r"[\x00-\x08\x0b-\x1f]", text)
-    )
+    garbage_count = text.count("\ufffd") + len(re.findall(r"[\x00-\x08\x0b-\x1f]", text))
     garbage = garbage_count / max(1, len(text))
     score = 0.6 * coverage + 0.3 * structure + 0.1 * (1 - garbage)
     return round(max(0.0, min(1.0, score)), 4)
@@ -215,7 +213,7 @@ class PypdfExtractor:
                 import pypdf
             except ImportError as exc:  # pragma: no cover - depends on env
                 raise FullTextParseError(
-                    "pypdf is not installed; run `pip install -e \".[processing]\"`"
+                    'pypdf is not installed; run `pip install -e ".[processing]"`'
                 ) from exc
             self._module = pypdf
         return self._module
@@ -243,9 +241,7 @@ class PypdfExtractor:
         except FullTextParseError:
             raise
         except Exception as exc:  # pypdf raises assorted errors on broken files
-            raise FullTextParseError(
-                f"pypdf failed to read {pdf_path.name}: {exc}"
-            ) from exc
+            raise FullTextParseError(f"pypdf failed to read {pdf_path.name}: {exc}") from exc
         return ExtractedDocument(
             text="\n\n".join(pages), page_count=page_count, markdown_ready=False
         )
@@ -304,13 +300,9 @@ class MineruExtractor:
             zip_url = await self._poll_batch(client, batch_id)
             markdown = await self._download_markdown(client, zip_url)
         page_count = await self._safe_page_count(pdf_path)
-        return ExtractedDocument(
-            text=markdown, page_count=page_count, markdown_ready=True
-        )
+        return ExtractedDocument(text=markdown, page_count=page_count, markdown_ready=True)
 
-    async def _request_upload(
-        self, client: httpx.AsyncClient, pdf_path: Path
-    ) -> tuple[str, str]:
+    async def _request_upload(self, client: httpx.AsyncClient, pdf_path: Path) -> tuple[str, str]:
         payload = {
             "files": [
                 {
@@ -342,9 +334,7 @@ class MineruExtractor:
             raise ProviderUnavailableError(f"Malformed MinerU upload response: {exc}") from exc
         return batch_id, upload_url
 
-    async def _upload(
-        self, client: httpx.AsyncClient, upload_url: str, pdf_path: Path
-    ) -> None:
+    async def _upload(self, client: httpx.AsyncClient, upload_url: str, pdf_path: Path) -> None:
         content = await asyncio.to_thread(pdf_path.read_bytes)
         try:
             # MinerU requires no Content-Type header on the presigned PUT.
@@ -360,9 +350,7 @@ class MineruExtractor:
         deadline = asyncio.get_running_loop().time() + self._poll_timeout
         while True:
             try:
-                response = await client.get(
-                    f"{self._base_url}/extract-results/batch/{batch_id}"
-                )
+                response = await client.get(f"{self._base_url}/extract-results/batch/{batch_id}")
             except httpx.HTTPError as exc:
                 raise ProviderUnavailableError(f"MinerU polling failed: {exc}") from exc
             if response.status_code != 200:
@@ -518,9 +506,7 @@ class PdfMarkdownParser:
         return markdown_path, quality
 
     @staticmethod
-    def _read_cache(
-        markdown_path: Path, meta_path: Path, pdf_sha256: str
-    ) -> float | None:
+    def _read_cache(markdown_path: Path, meta_path: Path, pdf_sha256: str) -> float | None:
         if not (markdown_path.exists() and meta_path.exists()):
             return None
         try:

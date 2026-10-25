@@ -19,9 +19,7 @@ from paper_agent.domain.errors import ProviderUnavailableError
 class ChatClient(Protocol):
     """Minimal chat interface so summarizer/report tests can inject fakes."""
 
-    async def complete(
-        self, messages: list[dict[str, str]], *, temperature: float = 0.2
-    ) -> str:
+    async def complete(self, messages: list[dict[str, str]], *, temperature: float = 0.2) -> str:
         """Return the assistant text for one chat completion round-trip."""
         ...
 
@@ -48,9 +46,7 @@ class OpenAiCompatibleChatClient:
         self._timeout = timeout_seconds
         self._transport = transport
 
-    async def complete(
-        self, messages: list[dict[str, str]], *, temperature: float = 0.2
-    ) -> str:
+    async def complete(self, messages: list[dict[str, str]], *, temperature: float = 0.2) -> str:
         payload = {
             "model": self._model,
             "messages": messages,
@@ -67,12 +63,16 @@ class OpenAiCompatibleChatClient:
                 response = await client.post(
                     f"{self._base_url}/chat/completions", json=payload, headers=headers
                 )
+                if response.status_code == 400 and "temperature" in response.text.lower():
+                    # Some reasoning models accept only their default temperature.
+                    payload.pop("temperature", None)
+                    response = await client.post(
+                        f"{self._base_url}/chat/completions", json=payload, headers=headers
+                    )
         except httpx.HTTPError as exc:
             raise ProviderUnavailableError(f"LLM request failed: {exc}") from exc
         if response.status_code != 200:
-            raise ProviderUnavailableError(
-                f"LLM endpoint returned HTTP {response.status_code}"
-            )
+            raise ProviderUnavailableError(f"LLM endpoint returned HTTP {response.status_code}")
         try:
             data = response.json()
             content = data["choices"][0]["message"]["content"]

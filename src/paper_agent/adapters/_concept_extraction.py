@@ -13,6 +13,22 @@ from dataclasses import dataclass, field
 
 # Chinese -> English academic terms. Longest match wins ("数学推理" beats "推理").
 _ZH_EN_TERMS: dict[str, str] = {
+    "场景文本检测": "scene text detection",
+    "场景文本识别": "scene text recognition",
+    "场景文本": "scene text",
+    "文字检测": "text detection",
+    "文字识别": "text recognition",
+    "文本检测": "text detection",
+    "文本识别": "text recognition",
+    "光学字符识别": "optical character recognition",
+    "视觉语言导航": "vision language navigation",
+    "无人机": "unmanned aerial vehicle",
+    "长期记忆": "long term memory",
+    "失败恢复": "failure recovery",
+    "世界模型": "world model",
+    "目标检测": "object detection",
+    "图像分割": "image segmentation",
+    "图神经网络": "graph neural network",
     "深度强化学习": "deep reinforcement learning",
     "强化学习": "reinforcement learning",
     "数学推理": "mathematical reasoning",
@@ -50,6 +66,19 @@ _ZH_EN_TERMS: dict[str, str] = {
 }
 
 _SYNONYM_GROUPS: list[list[str]] = [
+    [
+        "scene text",
+        "scene text detection",
+        "scene text recognition",
+        "text spotting",
+        "optical character recognition",
+        "OCR",
+        "natural scene text",
+        "end-to-end text spotting",
+    ],
+    ["vision language navigation", "VLN", "visual navigation"],
+    ["unmanned aerial vehicle", "UAV", "drone"],
+    ["graph neural network", "GNN", "graph neural networks"],
     ["reinforcement learning", "RL", "policy optimization"],
     ["mathematical reasoning", "math reasoning"],
     ["large language model", "LLM"],
@@ -60,10 +89,39 @@ _SYNONYM_GROUPS: list[list[str]] = [
 ]
 
 _STOPWORDS = {
-    "the", "a", "an", "of", "for", "in", "on", "with", "and", "or", "to",
-    "how", "improve", "improving", "using", "use", "based", "via", "towards",
-    "toward", "study", "research", "method", "methods", "approach", "利用",
-    "提升", "提高", "研究", "基于", "通过", "如何", "什么",
+    "the",
+    "a",
+    "an",
+    "of",
+    "for",
+    "in",
+    "on",
+    "with",
+    "and",
+    "or",
+    "to",
+    "how",
+    "improve",
+    "improving",
+    "using",
+    "use",
+    "based",
+    "via",
+    "towards",
+    "toward",
+    "study",
+    "research",
+    "method",
+    "methods",
+    "approach",
+    "利用",
+    "提升",
+    "提高",
+    "研究",
+    "基于",
+    "通过",
+    "如何",
+    "什么",
 }
 
 _TOKEN_RE = re.compile(r"[a-zA-Z]{2,}")
@@ -109,8 +167,7 @@ class HeuristicConceptExtractor:
             if en in concepts:
                 continue
             overlapped = any(
-                not (end <= s or start >= e) and (e - s) > (end - start)
-                for s, e, _ in spans
+                not (end <= s or start >= e) and (e - s) > (end - start) for s, e, _ in spans
             )
             if overlapped:
                 continue
@@ -126,10 +183,9 @@ class HeuristicConceptExtractor:
         # Drop concepts whose every word already appears in a longer concept
         # (e.g. "reasoning" after "mathematical reasoning"), then cap the list.
         concepts = [
-            c for c in concepts
-            if not any(
-                o != c and all(w in o.split() for w in c.split()) for o in concepts
-            )
+            c
+            for c in concepts
+            if not any(o != c and all(w in o.split() for w in c.split()) for o in concepts)
         ]
         concepts = concepts[:8]
         return ExtractedConcepts(concepts=concepts, synonyms=_synonyms_for(concepts))

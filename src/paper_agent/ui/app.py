@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 
 import streamlit as st
@@ -11,6 +10,7 @@ from paper_agent.application.processing_benchmark import benchmark_to_markdown
 from paper_agent.bootstrap import build_agent
 from paper_agent.config import Settings, load_local_env
 from paper_agent.domain.models import PipelineRequest, ProcessingStatus, ResearchIdea
+from paper_agent.domain.publication_policy import is_recent
 from paper_agent.ui.markdown_exports import (
     evidence_audit,
     load_paper_markdown,
@@ -18,6 +18,8 @@ from paper_agent.ui.markdown_exports import (
     summary_to_markdown,
     zip_markdown_files,
 )
+from paper_agent.ui.progress import PipelineProgress
+from paper_agent.ui.research_job import ResearchJob
 from paper_agent.ui.workbench import render_benchmark, render_processing_metrics, render_workbench
 
 st.set_page_config(page_title="论文研究智能体", page_icon="📚", layout="wide")
@@ -34,12 +36,32 @@ st.markdown(
 
 @st.cache_resource
 def get_agent():
+    """Build the agent with source-level publication windows and newest-first retrieval."""
     return build_agent()
 
 
-def run_async(coro):
-    """Keep asynchronous orchestration behind one UI boundary."""
-    return asyncio.run(coro)
+def store_research_result(result):
+    st.session_state["pipeline_result"] = result
+    st.session_state[f"pipeline_{result.run_id}_selected_stage"] = st.session_state.get(
+        "pipeline_live_selected_stage"
+    )
+    st.session_state.pop("research_job", None)
+    st.session_state.pop("processing_run", None)
+    st.session_state.pop("processing_benchmark", None)
+
+
+@st.fragment(run_every=1)
+def render_running_research(job, stages):
+    events, result, error, done = job.snapshot()
+    if done and result is not None:
+        store_research_result(result)
+        st.rerun()
+    if error:
+        st.error(error)
+    st.caption(f"当前任务：{job.request.idea.text}")
+    PipelineProgress(stages, key="pipeline_live").replay(
+        events, ProcessingStatus.FAILED if error else None
+    )
 
 
 def split_terms(value: str) -> list[str]:
@@ -54,16 +76,26 @@ st.caption(
 
 load_local_env()
 settings = Settings.from_env()
-mode = st.radio("运行入口", ["完整研究流程", "第三组独立演示"], horizontal=True)
+job = st.session_state.get("research_job")
+research_running = job is not None and not job.snapshot()[3]
+mode = st.radio(
+    "运行入口", ["完整研究流程", "第三组独立演示"], horizontal=True, disabled=research_running
+)
 
 with st.sidebar:
     st.header("任务配置")
     top_k = st.slider("最终论文数 Top-k", 1, 20, 5, help="全文确认后最终返回的论文数")
     pool_size = st.slider(
-        "全文候选池 N", top_k, 100, max(20, top_k),
+        "全文候选池 N",
+        top_k,
+        100,
+        max(20, top_k),
         help="预排序后进入下载解析的候选数；N 应明显大于 k，以便失败补位。",
     )
     source_limit = st.slider("每个来源最多召回", 5, 200, 30)
+    st.caption(
+        "默认检索近5年文献；近2年相关文献优先，目标占比至少70%。各来源采用日期筛选与适配的排序方式。"
+    )
     st.number_input("并发提示", 1, 32, 4, disabled=True)
     require_fulltext = st.checkbox("仅保留成功解析全文", value=False)
     allow_abstract_fallback = st.checkbox("全文失败时允许摘要降级", value=True)
@@ -89,8 +121,11 @@ with st.sidebar:
         if settings.app_env in {"ranking", "production"} and not settings.reranker_model:
             st.caption("未配置重排模型：使用第二组规则排序，实际依据见排序分项。")
     if independent or settings.app_env == "production":
-        if not (os.getenv("OPENAI_API_KEY") or "").strip():
-            st.info("未配置总结 API：使用抽取式单篇总结和模板综合报告，仍可下载 Markdown。")
+        if not (
+            (os.getenv("OPENAI_API_KEY") or "").strip()
+            or (os.getenv("PAPER_AGENT_LLM_API_KEY") or "").strip()
+        ):
+            st.info("未配置总结 API：单篇总结使用抽取式降级，综述使用模板并注明证据限制。")
         else:
             st.caption(
                 f"已配置总结模型：{settings.llm_model}。"
@@ -102,7 +137,11 @@ idea = st.text_area(
     value="面向无人机视觉语言导航的长期记忆、失败恢复与世界模型联合方法",
     height=130,
     placeholder="请描述研究对象、核心问题、方法侧重点和期望时间范围……",
+    help="支持简短研究主题，例如“场景文本检测与识别”或“OCR”；补充方法与时间范围可帮助筛选。",
 )
+idea_text = idea.strip()
+if not idea_text:
+    st.info("请输入研究主题或研究问题后再开始。")
 
 with st.expander("可选检索约束"):
     c1, c2, c3 = st.columns(3)
@@ -114,13 +153,20 @@ if mode == "第三组独立演示":
     render_workbench(settings, idea)
 else:
     st.caption("点击下方按钮生成结果；完成后可下载论文全文 Markdown、单篇总结和综合报告。")
-if mode == "完整研究流程" and st.button(
-    "开始研究（下载论文并生成总结）", type="primary",
-    disabled=len(idea.strip()) < 10, use_container_width=True,
-):
+    st.caption("综合报告输出300–500字中文综述；全文不可用的文献仍保留在“全部文献元数据”。")
+start_research = mode == "完整研究流程" and st.button(
+    "开始研究（下载论文并生成总结）",
+    type="primary",
+    disabled=not idea_text or research_running,
+    use_container_width=True,
+)
+# An edit and a click can arrive in the same rerun, before the browser sees disabled=True.
+start_research = start_research and bool(idea_text) and not research_running
+if start_research:
+    st.session_state.pop("pipeline_result", None)
     request = PipelineRequest(
         idea=ResearchIdea(
-            text=idea,
+            text=idea_text,
             required_terms=split_terms(required_text),
             excluded_terms=split_terms(excluded_text),
             ranking_focus=split_terms(focus_text),
@@ -131,48 +177,68 @@ if mode == "完整研究流程" and st.button(
         require_fulltext=require_fulltext,
         allow_abstract_fallback=allow_abstract_fallback,
     )
-    with st.status("主 Agent 正在执行……", expanded=True) as status_box:
-        result = run_async(get_agent().research(request))
-        for event in result.events:
-            icon = "✅" if event.status.value == "succeeded" else "⚠️"
-            st.write(
-                f"{icon} {event.stage.value} · {event.duration_ms or 0} ms · "
-                f"{event.output_count if event.output_count is not None else '—'} 条"
-            )
-        status_box.update(
-            label=f"流程结束：{result.status.value}",
-            state="complete" if result.status != ProcessingStatus.FAILED else "error",
-        )
-    st.session_state["pipeline_result"] = result
-    st.session_state.pop("processing_run", None)
-    st.session_state.pop("processing_benchmark", None)
+    st.session_state["pipeline_live_selected_stage"] = None
+    st.session_state["research_job"] = ResearchJob(get_agent(), request).start()
+    if not st.session_state["research_job"].snapshot()[3]:
+        st.rerun()
+
+job = st.session_state.get("research_job")
+if job is not None:
+    _, completed_result, _, done = job.snapshot()
+    if done and completed_result is not None:
+        store_research_result(completed_result)
+    else:
+        render_running_research(job, contract.stages)
 
 result = st.session_state.get("pipeline_result")
 if result:
     render_processing_metrics(result)
     processing_run = st.session_state.get("processing_run")
     is_workbench = bool(processing_run and processing_run.result.run_id == result.run_id)
+    if not is_workbench:
+        PipelineProgress(contract.stages, key=f"pipeline_{result.run_id}").replay(
+            result.progress_events or result.events, result.status
+        )
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("最终论文", len(result.papers))
-    m2.metric("完成阶段", len(result.events))
+    m2.metric("完成阶段", sum(e.status != ProcessingStatus.FAILED for e in result.events))
     m3.metric("累计阶段耗时", f"{result.total_duration_ms / 1000:.2f}s")
     m4.metric("警告", len(result.warnings))
+    plan_data = next(
+        (e.details.get("plan", {}) for e in result.events if e.stage.value == "query_planned"), {}
+    )
+    if plan_data.get("recent_from"):
+        from datetime import date
+
+        recent_cutoff = date.fromisoformat(plan_data["recent_from"])
+        recent_count = sum(is_recent(p, recent_cutoff) for p in result.papers)
+        st.caption(
+            f"本轮检索范围：{plan_data['date_from']} 至 {plan_data['date_to']}；"
+            f"最终结果中近2年文献 {recent_count}/{len(result.papers)} 篇。"
+            "若相关新文献不足，会在近5年范围内补充，不为凑比例纳入无关文献。"
+        )
 
     paper_by_id = {paper.paper_id: paper for paper in result.papers}
     paper_documents = {
-        paper.paper_id: load_paper_markdown(paper, settings.data_dir)
-        for paper in result.papers
+        paper.paper_id: load_paper_markdown(paper, settings.data_dir) for paper in result.papers
     }
     summary_sources = {
         summary.paper_id: (
-            paper_documents.get(summary.paper_id) if summary.generated_from_fulltext
-            else (paper_by_id[summary.paper_id].abstract if summary.paper_id in paper_by_id else None)
-        ) for summary in result.summaries
+            paper_documents.get(summary.paper_id)
+            if summary.generated_from_fulltext
+            else (
+                paper_by_id[summary.paper_id].abstract if summary.paper_id in paper_by_id else None
+            )
+        )
+        for summary in result.summaries
     }
     summary_documents = {
         summary.paper_id: summary_to_markdown(
-            summary, paper_by_id.get(summary.paper_id), source_text=summary_sources[summary.paper_id],
-        ) for summary in result.summaries
+            summary,
+            paper_by_id.get(summary.paper_id),
+            source_text=summary_sources[summary.paper_id],
+        )
+        for summary in result.summaries
     }
     downloads = {}
     for paper in result.papers:
@@ -195,8 +261,10 @@ if result:
     st.download_button(
         "一键下载全部 Markdown（ZIP）",
         zip_markdown_files(downloads),
-        file_name=f"research_{result.run_id}.zip", mime="application/zip",
-        key=f"bundle_{result.run_id}", disabled=not downloads,
+        file_name=f"research_{result.run_id}.zip",
+        mime="application/zip",
+        key=f"bundle_{result.run_id}",
+        disabled=not downloads,
     )
     available_count = sum(text is not None for text in paper_documents.values())
     st.caption(
@@ -211,9 +279,18 @@ if result:
             for warning in result.warnings:
                 st.warning(warning)
 
-    papers_tab, markdown_tab, summaries_tab, report_tab, benchmark_tab, audit_tab = st.tabs(
-        ["输入论文（未排序）" if is_workbench else "Top-k 论文", "论文 Markdown",
-         "单篇总结", "综合报告", "性能对比", "运行审计"]
+    papers_tab, markdown_tab, summaries_tab, report_tab, benchmark_tab, audit_tab, metadata_tab = (
+        st.tabs(
+            [
+                "输入论文（未排序）" if is_workbench else "Top-k 论文",
+                "论文 Markdown",
+                "单篇总结",
+                "综合报告",
+                "性能对比",
+                "运行审计",
+                "全部文献元数据",
+            ]
+        )
     )
 
     with papers_tab:
@@ -228,7 +305,11 @@ if result:
                 "发表位置": (paper.venue.name if paper.venue else None) or "未提供",
                 "DOI": paper.doi or "未提供",
                 "arXiv": paper.arxiv_id or "—",
-                "开放获取": "是" if paper.is_open_access else "否" if paper.is_open_access is False else "未确认",
+                "开放获取": "是"
+                if paper.is_open_access
+                else "否"
+                if paper.is_open_access is False
+                else "未确认",
             }
             if not is_workbench:
                 row.update({"代码状态": paper.code.status.value, "最终分数": paper.scores.final})
@@ -244,17 +325,19 @@ if result:
                 left, right = st.columns([3, 2])
                 with left:
                     st.markdown(f"**作者**：{', '.join(a.name for a in paper.authors) or missing}")
-                    institutions = ', '.join(paper.institutions) or (
+                    institutions = ", ".join(paper.institutions) or (
                         "arXiv 未提供机构字段，不代表作者没有单位" if metadata_received else missing
                     )
                     st.markdown(f"**单位**：{institutions}")
                     st.markdown(f"**摘要**：{paper.abstract or missing}")
                 with right:
-                    sources = list(dict.fromkeys(
-                        "arXiv" if r.source.value == "arxiv" else r.source.value
-                        for r in paper.source_records
-                    ))
-                    source = '、'.join(sources) or (
+                    sources = list(
+                        dict.fromkeys(
+                            "arXiv" if r.source.value == "arxiv" else r.source.value
+                            for r in paper.source_records
+                        )
+                    )
+                    source = "、".join(sources) or (
                         "arXiv（按输入编号，基本信息未获取）" if paper.arxiv_id else missing
                     )
                     st.markdown(f"**来源**：{source}")
@@ -262,15 +345,23 @@ if result:
                     if landing:
                         st.link_button("查看论文来源", str(landing))
                     access = {
-                        "open_access": "开放获取", "closed": "非开放获取",
-                        "unavailable": "不可用", "unknown": "尚未确认",
+                        "open_access": "开放获取",
+                        "closed": "非开放获取",
+                        "unavailable": "不可用",
+                        "unknown": "尚未确认",
                     }.get(paper.fulltext.access_status.value, "尚未确认")
                     st.markdown(f"**访问状态**：{access}")
                     parsed = paper_documents.get(paper.paper_id) is not None
-                    st.markdown(f"**解析状态**：{'已生成全文 Markdown' if parsed else '尚无可用全文文件'}")
+                    st.markdown(
+                        f"**解析状态**：{'已生成全文 Markdown' if parsed else '尚无可用全文文件'}"
+                    )
                     quality = paper.fulltext.parse_quality
-                    st.markdown(f"**解析完整度**：{f'{quality:.2f}' if quality is not None else '未评估'}")
-                    st.caption("完整度是文本覆盖与章节结构的启发式评分，不代表论文质量或总结正确性。")
+                    st.markdown(
+                        f"**解析完整度**：{f'{quality:.2f}' if quality is not None else '未评估'}"
+                    )
+                    st.caption(
+                        "完整度是文本覆盖与章节结构的启发式评分，不代表论文质量或总结正确性。"
+                    )
                     if not is_workbench:
                         scores = paper.scores.model_dump(mode="json", exclude_none=True)
                         if scores:
@@ -287,9 +378,11 @@ if result:
             st.subheader(paper.title)
             markdown = paper_documents[paper.paper_id]
             st.download_button(
-                "下载论文全文 Markdown", markdown or "",
+                "下载论文全文 Markdown",
+                markdown or "",
                 file_name=markdown_filename(paper.title, paper.paper_id, "paper"),
-                mime="text/markdown", key=f"paper_{result.run_id}_{paper.paper_id}",
+                mime="text/markdown",
+                key=f"paper_{result.run_id}_{paper.paper_id}",
                 disabled=markdown is None,
             )
             if markdown is None:
@@ -313,16 +406,20 @@ if result:
             markdown = summary_documents[summary.paper_id]
             st.subheader(title)
             st.download_button(
-                "下载单篇总结 Markdown", markdown,
+                "下载单篇总结 Markdown",
+                markdown,
                 file_name=markdown_filename(title, summary.paper_id, "summary"),
-                mime="text/markdown", key=f"summary_{result.run_id}_{summary.paper_id}",
+                mime="text/markdown",
+                key=f"summary_{result.run_id}_{summary.paper_id}",
             )
             summary_column, evidence_column = st.columns([3, 2])
             with summary_column:
                 st.markdown(markdown)
             with evidence_column:
                 st.markdown("#### 原文证据核对")
-                st.caption("只核对引文文字，不代表结论或模型给出的页码已被验证。行号指向下载的 Markdown/摘要。")
+                st.caption(
+                    "只核对引文文字，不代表结论或模型给出的页码已被验证。行号指向下载的 Markdown/摘要。"
+                )
                 audit = evidence_audit(summary, summary_sources[summary.paper_id])
                 matched = sum(row["核对"] == "原文匹配" for row in audit)
                 st.caption(f"匹配 {matched}/{len(audit)} 条引文")
@@ -340,11 +437,15 @@ if result:
             st.divider()
 
     with report_tab:
-        st.caption("综合论文总结：基于本次已成功生成的单篇总结汇总，并提供跨论文对比。")
+        st.caption(
+            "300–500字中文综述：整合方法路线、已有证据与局限，参考文献另列，不计入正文字数。"
+        )
         if result.report and result.report.markdown.strip():
             st.download_button(
-                "下载综合报告 Markdown", result.report.markdown,
-                file_name="research_report.md", mime="text/markdown",
+                "下载综合报告 Markdown",
+                result.report.markdown,
+                file_name="research_report.md",
+                mime="text/markdown",
                 key=f"report_{result.run_id}",
             )
             st.markdown(result.report.markdown)
@@ -354,9 +455,52 @@ if result:
     with benchmark_tab:
         render_benchmark(result, settings)
 
+    with metadata_tab:
+        retained = result.metadata_papers or result.papers
+        st.caption(
+            f"保留 {len(retained)} 篇去重后的文献元数据；全文下载或解析失败不会删除这些条目。"
+        )
+        st.dataframe(
+            [
+                {
+                    "题目": p.title,
+                    "作者": ", ".join(a.name for a in p.authors),
+                    "年份": p.year,
+                    "DOI": p.doi,
+                    "arXiv": p.arxiv_id,
+                    "来源": ", ".join(dict.fromkeys(r.source.value for r in p.source_records)),
+                    "全文状态": "已解析" if p.fulltext.markdown_path else "仅元数据/摘要",
+                    "获取失败原因": p.fulltext.parse_error,
+                    "摘要": p.abstract,
+                }
+                for p in retained
+            ],
+            hide_index=True,
+            width="stretch",
+        )
+        st.download_button(
+            "下载全部文献元数据 JSON",
+            "[" + ",".join(p.model_dump_json() for p in retained) + "]",
+            file_name="all_paper_metadata.json",
+            mime="application/json",
+        )
+
     with audit_tab:
         st.dataframe(
-            [event.model_dump(mode="json") for event in result.events],
+            [
+                {
+                    "阶段": event.stage.value,
+                    "范围": event.scope,
+                    "数据库": event.source_name,
+                    "文献": event.details.get("title"),
+                    "状态": event.status.value,
+                    "输入": event.input_count,
+                    "输出": event.output_count,
+                    "耗时（毫秒）": event.duration_ms,
+                    "错误或说明": event.message,
+                }
+                for event in (result.progress_events or result.events)
+            ],
             hide_index=True,
             use_container_width=True,
         )
@@ -366,5 +510,8 @@ if result:
             file_name=f"pipeline_result_{result.run_id}.json",
             mime="application/json",
         )
-else:
-    st.info("先点击当前入口的处理按钮，生成后即可下载全文、单篇总结、综合报告，并查看证据与性能对比。")
+elif st.session_state.get("research_job") is None:
+    if mode == "完整研究流程":
+        PipelineProgress(contract.stages, key="pipeline_idle").replay([])
+    else:
+        st.info("先处理论文，完成后可下载全文、单篇总结和综合报告。")

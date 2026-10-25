@@ -26,10 +26,18 @@ from paper_agent.adapters._retriever_utils import (
     parse_year,
     sanitize_query,
 )
-from paper_agent.domain.models import Author, Paper, PaperSource, SearchPlan, SourceRecord, Venue
+from paper_agent.domain.models import (
+    Author,
+    FullTextAsset,
+    Paper,
+    PaperSource,
+    SearchPlan,
+    SourceRecord,
+    Venue,
+)
 
 _API_URL = "https://api.crossref.org/works"
-_SELECT_FIELDS = "DOI,title,author,container-title,issued,published,abstract,is-referenced-by-count,URL,type"
+_SELECT_FIELDS = "DOI,title,author,container-title,issued,published,abstract,is-referenced-by-count,URL,type,link"
 _JATS_TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -68,20 +76,38 @@ class CrossrefRetriever:
         query = next((q for q in plan.queries if q.source == PaperSource.CROSSREF), None)
         if query is None:
             return []
-        payload = await asyncio.to_thread(self._fetch, query.query, query.limit)
+        payload = (
+            await asyncio.to_thread(
+                self._fetch, query.query, query.limit, query.filters, query.sort_by
+            )
+            if query.filters or query.sort_by != "relevance"
+            else await asyncio.to_thread(self._fetch, query.query, query.limit)
+        )
         return self._to_papers(payload)
 
-    def _fetch(self, raw_query: str, limit: int) -> Any:
+    def _fetch(self, raw_query: str, limit: int, filters=None, sort_by="relevance") -> Any:
         headers = {}
         if self.contact_email:
             headers["User-Agent"] = f"paper-research-agent/0.2 (mailto:{self.contact_email})"
+        params = {
+            "query.bibliographic": sanitize_query(raw_query),
+            "rows": max(1, min(limit, 100)),
+            "select": _SELECT_FIELDS,
+        }
+        dates = []
+        if (filters or {}).get("date_from"):
+            dates.append("from-pub-date:" + str(filters["date_from"]))
+        if (filters or {}).get("date_to"):
+            dates.append("until-pub-date:" + str(filters["date_to"]))
+        if dates:
+            params["filter"] = ",".join(dates)
+        if sort_by == "publication_date":
+            params.update(sort="published", order="desc")
+            # Title matching reduces incidental mentions when taking newest records.
+            params["query.title"] = params.pop("query.bibliographic")
         return http_get_json(
             _API_URL,
-            params={
-                "query": sanitize_query(raw_query),
-                "rows": max(1, min(limit, 100)),
-                "select": _SELECT_FIELDS,
-            },
+            params=params,
             headers=headers or None,
             timeout=self.timeout,
         )
@@ -107,7 +133,9 @@ class CrossrefRetriever:
             Author(
                 name=" ".join(filter(None, [a.get("given"), a.get("family")])).strip(),
                 orcid=normalize_orcid(a.get("ORCID")),
-                affiliations=[aff.get("name") for aff in a.get("affiliation", []) if aff.get("name")],
+                affiliations=[
+                    aff.get("name") for aff in a.get("affiliation", []) if aff.get("name")
+                ],
             )
             for a in item.get("author", [])
             if " ".join(filter(None, [a.get("given"), a.get("family")])).strip()
@@ -116,7 +144,11 @@ class CrossrefRetriever:
         issued = _date_from_parts((item.get("issued") or {}).get("date-parts"))
         published = _date_from_parts((item.get("published") or {}).get("date-parts"))
         publication_date = issued or published
-        year = parse_year((item.get("issued") or {}).get("date-parts", [[None]])[0][0]) if (item.get("issued") or {}).get("date-parts") else None
+        year = (
+            parse_year((item.get("issued") or {}).get("date-parts", [[None]])[0][0])
+            if (item.get("issued") or {}).get("date-parts")
+            else None
+        )
         if publication_date:
             year = publication_date.year
 
@@ -147,6 +179,18 @@ class CrossrefRetriever:
             citation_count=item.get("is-referenced-by-count"),
             bibtex=bibtex,
             landing_page_url=url,
+            fulltext=FullTextAsset(
+                candidate_urls=[
+                    link["URL"]
+                    for link in item.get("link", [])
+                    if isinstance(link, dict)
+                    and link.get("URL")
+                    and (
+                        "pdf" in (link.get("content-type") or "").lower()
+                        or link["URL"].lower().endswith(".pdf")
+                    )
+                ]
+            ),
             source_records=[
                 SourceRecord(
                     source=PaperSource.CROSSREF,

@@ -1,4 +1,5 @@
 """Conservative, provenance-preserving paper deduplication."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -24,7 +25,9 @@ class PaperMerger:
         for original in papers:
             candidate = deepcopy(original)
             self._normalize(candidate)
-            match = next((existing for existing in groups if self._can_merge(existing, candidate)), None)
+            match = next(
+                (existing for existing in groups if self._can_merge(existing, candidate)), None
+            )
             if match is None:
                 groups.append(candidate)
             else:
@@ -81,32 +84,51 @@ class PaperMerger:
     def _venue_boundary(left: Venue | None, right: Venue | None) -> bool:
         if not left or not right:
             return False
-        left_type, right_type = (left.venue_type or "").casefold(), (right.venue_type or "").casefold()
+        left_type, right_type = (
+            (left.venue_type or "").casefold(),
+            (right.venue_type or "").casefold(),
+        )
         return bool(left_type and right_type and left_type != right_type)
 
     @classmethod
     def _merge_into(cls, target: Paper, incoming: Paper) -> None:
-        if target.title != incoming.title and normalize_title(target.title) == normalize_title(incoming.title):
+        if target.title != incoming.title and normalize_title(target.title) == normalize_title(
+            incoming.title
+        ):
             target.aliases = cls._unique(target.aliases + [incoming.title])
         elif target.title != incoming.title:
-            cls._add_conflict(target, f"title: conflicting values retained first ({incoming.title!r})")
+            cls._add_conflict(
+                target, f"title: conflicting values retained first ({incoming.title!r})"
+            )
         target.aliases = cls._unique(target.aliases + incoming.aliases)
         target.authors = cls._merge_authors(target.authors, incoming.authors)
         target.institutions = cls._unique(target.institutions + incoming.institutions)
         target.keywords = cls._unique(target.keywords + incoming.keywords)
         target.source_records = cls._merge_sources(target.source_records, incoming.source_records)
-        target.metadata_conflicts = cls._unique(target.metadata_conflicts + incoming.metadata_conflicts)
+        target.metadata_conflicts = cls._unique(
+            target.metadata_conflicts + incoming.metadata_conflicts
+        )
 
         for field in (
-            "doi", "arxiv_id", "pmid", "openalex_id", "semantic_scholar_id", "bibtex",
-            "language", "comments", "landing_page_url", "open_access_url",
+            "doi",
+            "arxiv_id",
+            "pmid",
+            "openalex_id",
+            "semantic_scholar_id",
+            "bibtex",
+            "language",
+            "comments",
+            "landing_page_url",
+            "open_access_url",
             "project_page_url",
         ):
             cls._choose_scalar(target, incoming, field)
         if target.publication_status == PublicationStatus.UNKNOWN:
             target.publication_status = incoming.publication_status
-        elif (incoming.publication_status != PublicationStatus.UNKNOWN
-              and target.publication_status != incoming.publication_status):
+        elif (
+            incoming.publication_status != PublicationStatus.UNKNOWN
+            and target.publication_status != incoming.publication_status
+        ):
             cls._add_conflict(target, "publication_status: conflicting values retained first")
         cls._merge_publication_time(target, incoming)
         cls._choose_scalar(target, incoming, "abstract", prefer_longer=True)
@@ -114,12 +136,20 @@ class PaperMerger:
             target.venue = deepcopy(incoming.venue)
         elif target.venue is not None and incoming.venue is not None:
             for field in Venue.model_fields:
-                cls._merge_asset_field(target, target.venue, incoming.venue, field, f"venue.{field}")
+                cls._merge_asset_field(
+                    target, target.venue, incoming.venue, field, f"venue.{field}"
+                )
         target.citation_count = cls._max_optional(target.citation_count, incoming.citation_count)
         if incoming.is_open_access is not None:
-            target.is_open_access = target.is_open_access if target.is_open_access is not None else incoming.is_open_access
+            target.is_open_access = (
+                target.is_open_access
+                if target.is_open_access is not None
+                else incoming.is_open_access
+            )
         if incoming.is_retracted is not None:
-            target.is_retracted = target.is_retracted if target.is_retracted is not None else incoming.is_retracted
+            target.is_retracted = (
+                target.is_retracted if target.is_retracted is not None else incoming.is_retracted
+            )
         target.dataset_urls = cls._unique(target.dataset_urls + incoming.dataset_urls)
         cls._merge_code(target, incoming)
         cls._merge_fulltext(target, incoming)
@@ -155,6 +185,11 @@ class PaperMerger:
         for field in FullTextAsset.model_fields:
             if field == "access_status":
                 continue
+            if field in {"candidate_urls", "attempts"}:
+                setattr(
+                    current, field, cls._unique(getattr(current, field) + getattr(candidate, field))
+                )
+                continue
             cls._merge_asset_field(target, current, candidate, field, f"fulltext.{field}")
 
     @classmethod
@@ -166,12 +201,19 @@ class PaperMerger:
             cls._add_conflict(target, f"{label}: conflicting values retained first")
 
     @staticmethod
-    def _choose_scalar(target: Paper, incoming: Paper, field: str, prefer_longer: bool = False) -> None:
+    def _choose_scalar(
+        target: Paper, incoming: Paper, field: str, prefer_longer: bool = False
+    ) -> None:
         current, candidate = getattr(target, field), getattr(incoming, field)
         if current is None and candidate is not None:
             setattr(target, field, deepcopy(candidate))
         elif current is not None and candidate is not None and current != candidate:
-            if prefer_longer and isinstance(current, str) and isinstance(candidate, str) and len(candidate) > len(current):
+            if (
+                prefer_longer
+                and isinstance(current, str)
+                and isinstance(candidate, str)
+                and len(candidate) > len(current)
+            ):
                 setattr(target, field, candidate)
             else:
                 PaperMerger._add_conflict(target, f"{field}: conflicting values retained first")
@@ -181,7 +223,9 @@ class PaperMerger:
         incoming_date, incoming_year = incoming.publication_date, incoming.year
         if target.publication_date is not None:
             if incoming_date and target.publication_date != incoming_date:
-                PaperMerger._add_conflict(target, "publication_date: conflicting values retained first")
+                PaperMerger._add_conflict(
+                    target, "publication_date: conflicting values retained first"
+                )
             if incoming_year and incoming_year != target.publication_date.year:
                 PaperMerger._add_conflict(target, "year: conflicts with retained publication_date")
             return

@@ -47,9 +47,7 @@ class OpenAccessResolverTest(unittest.TestCase):
                 "version": "acceptedVersion",
             },
         }
-        resolver = UnpaywallResolver(
-            email=EMAIL, transport=_unpaywall_transport(payload)
-        )
+        resolver = UnpaywallResolver(email=EMAIL, transport=_unpaywall_transport(payload))
         resolved = asyncio.run(resolver.resolve(paper))
         self.assertEqual(str(resolved.fulltext.pdf_url), "https://repo.example.org/42.pdf")
         self.assertEqual(
@@ -62,9 +60,7 @@ class OpenAccessResolverTest(unittest.TestCase):
     def test_unpaywall_closed_raises_with_closed_status(self):
         paper = Paper(title="Paywalled", doi="10.1000/closed")
         payload = {"is_oa": False, "best_oa_location": None, "oa_locations": []}
-        resolver = UnpaywallResolver(
-            email=EMAIL, transport=_unpaywall_transport(payload)
-        )
+        resolver = UnpaywallResolver(email=EMAIL, transport=_unpaywall_transport(payload))
         with self.assertRaises(NoOpenAccessCopyError):
             asyncio.run(resolver.resolve(paper))
         self.assertEqual(paper.fulltext.access_status, AccessStatus.CLOSED)

@@ -190,9 +190,7 @@ class HttpPdfDownloader:
                 retryable=False,
             )
 
-    async def _read_response(
-        self, url: str, response: httpx.Response
-    ) -> tuple[bytes, str]:
+    async def _read_response(self, url: str, response: httpx.Response) -> tuple[bytes, str]:
         status = response.status_code
         if status in _FORBIDDEN_CODES:
             raise NoOpenAccessCopyError(f"HTTP {status} for {url}")

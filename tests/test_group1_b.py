@@ -73,10 +73,14 @@ class QueryPlannerTest(unittest.TestCase):
         plan = asyncio.run(self.planner.plan(ResearchIdea(text=IDEA_ZH), 25))
         sources = [q.source for q in plan.queries]
         self.assertEqual(
-            set(sources), {
-                PaperSource.ARXIV, PaperSource.OPENALEX, PaperSource.CROSSREF,
-                PaperSource.SEMANTIC_SCHOLAR, PaperSource.EUROPE_PMC,
-            }
+            set(sources),
+            {
+                PaperSource.ARXIV,
+                PaperSource.OPENALEX,
+                PaperSource.CROSSREF,
+                PaperSource.SEMANTIC_SCHOLAR,
+                PaperSource.EUROPE_PMC,
+            },
         )
         for q in plan.queries:
             self.assertEqual(q.limit, 25)
@@ -142,10 +146,18 @@ class LLMConceptExtractorTest(unittest.TestCase):
         extractor = LLMConceptExtractor(api_key="sk-test")
         response = mock.Mock(status_code=200)
         response.json.return_value = {
-            "choices": [{"message": {"content": json.dumps({
-                "concepts": ["GRPO", "process reward model"],
-                "synonyms": ["RL"],
-            })}}]
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "concepts": ["GRPO", "process reward model"],
+                                "synonyms": ["RL"],
+                            }
+                        )
+                    }
+                }
+            ]
         }
         with mock.patch("paper_agent.adapters.llm_concept_extractor.requests.post") as post:
             post.return_value = response
@@ -246,8 +258,12 @@ CROSSREF_PAYLOAD = {
                 "DOI": "https://doi.org/10.1000/demo",
                 "title": ["Deep RL for Mathematical Reasoning"],
                 "author": [
-                    {"given": "Alex", "family": "Chen", "ORCID": "https://orcid.org/0000-0001-0000-0000",
-                     "affiliation": [{"name": "Example University"}]},
+                    {
+                        "given": "Alex",
+                        "family": "Chen",
+                        "ORCID": "https://orcid.org/0000-0001-0000-0000",
+                        "affiliation": [{"name": "Example University"}],
+                    },
                 ],
                 "container-title": ["Journal of Demo"],
                 "issued": {"date-parts": [[2024, 5, 3]]},
@@ -272,8 +288,13 @@ OPENALEX_PAYLOAD = {
             "doi": "https://doi.org/10.1000/openalex",
             "display_name": "Group Relative Policy Optimization",
             "authorships": [
-                {"author": {"display_name": "Taylor Li", "orcid": "https://orcid.org/0000-0002-0000-0000"},
-                 "institutions": [{"display_name": "Demo Institute"}]},
+                {
+                    "author": {
+                        "display_name": "Taylor Li",
+                        "orcid": "https://orcid.org/0000-0002-0000-0000",
+                    },
+                    "institutions": [{"display_name": "Demo Institute"}],
+                },
             ],
             "publication_year": 2024,
             "publication_date": "2024-02-01",
@@ -365,25 +386,33 @@ class RetrieverMappingTest(unittest.TestCase):
         # Real S2 records can carry openAccessPdf with an empty url string;
         # the contract requires None instead of "" (URL validation fails).
         retriever = SemanticScholarRetriever()
-        payload = {"data": [{
-            "paperId": "xyz789",
-            "title": "Empty OA URL Record",
-            "year": 2024,
-            "authors": [{"name": "Taylor Li"}],
-            "openAccessPdf": {"url": ""},
-        }]}
+        payload = {
+            "data": [
+                {
+                    "paperId": "xyz789",
+                    "title": "Empty OA URL Record",
+                    "year": 2024,
+                    "authors": [{"name": "Taylor Li"}],
+                    "openAccessPdf": {"url": ""},
+                }
+            ]
+        }
         paper = retriever._to_papers(payload)[0]
         self.assertIsNone(paper.open_access_url)
         self.assertFalse(paper.is_open_access)
 
     def test_openalex_empty_oa_url_becomes_none(self):
         retriever = OpenAlexRetriever()
-        payload = {"results": [{
-            "id": "https://openalex.org/W789",
-            "display_name": "Empty OA URL Record",
-            "publication_year": 2024,
-            "open_access": {"is_oa": True, "oa_url": ""},
-        }]}
+        payload = {
+            "results": [
+                {
+                    "id": "https://openalex.org/W789",
+                    "display_name": "Empty OA URL Record",
+                    "publication_year": 2024,
+                    "open_access": {"is_oa": True, "oa_url": ""},
+                }
+            ]
+        }
         paper = retriever._to_papers(payload)[0]
         self.assertIsNone(paper.open_access_url)
 

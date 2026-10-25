@@ -6,7 +6,15 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.pem
+*.key
+*.p12
+*.pfx
 data/
 *.log
+pytest-cache-files-*/
 .DS_Store
 

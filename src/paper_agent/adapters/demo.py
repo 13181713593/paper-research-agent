@@ -191,4 +191,3 @@ def build_demo_dependencies() -> PipelineDependencies:
         summarizer=DemoSummarizer(),
         report_writer=DemoReportWriter(),
     )
-

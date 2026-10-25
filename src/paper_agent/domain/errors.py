@@ -23,4 +23,3 @@ class RankingError(PaperAgentError):
 
 class SummaryValidationError(PaperAgentError):
     """A generated summary failed schema or evidence validation."""
-

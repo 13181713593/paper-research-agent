@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
 
+from paper_agent.application.progress import output_count, output_snapshot, paper_snapshot
 from paper_agent.domain.models import (
     Paper,
     PipelineRequest,
@@ -16,6 +17,7 @@ from paper_agent.domain.models import (
     ProcessingStatus,
     StageEvent,
 )
+from paper_agent.domain.publication_policy import is_recent, reserve_recent
 from paper_agent.ports.contracts import (
     EvidenceVerifier,
     FinalRanker,
@@ -55,62 +57,203 @@ class ResearchPipeline:
         self, request: PipelineRequest, event_sink: EventSink | None = None
     ) -> PipelineResult:
         events: list[StageEvent] = []
+        progress_events: list[StageEvent] = []
         warnings: list[str] = []
+        metadata_papers: list[Paper] = []
+
+        async def emit(event: StageEvent) -> None:
+            # Running events drive the live view; terminal snapshots survive reruns/JSON export.
+            if event.status != ProcessingStatus.RUNNING:
+                progress_events.append(event)
+                if event.scope == "stage":
+                    events.append(event)
+            if event_sink:
+                await event_sink(event)
 
         async def stage(
             name: PipelineStage,
             operation: Callable[[], Awaitable[object]],
             input_count: int | None = None,
+            component: object | None = None,
         ) -> object:
             started_at = datetime.now(UTC)
             started = perf_counter()
+            warning_start = len(warnings)
+            details = {"demo": type(component).__name__.startswith("Demo")} if component else {}
             running = StageEvent(
-                stage=name, status=ProcessingStatus.RUNNING, started_at=started_at,
+                stage=name,
+                status=ProcessingStatus.RUNNING,
+                started_at=started_at,
                 input_count=input_count,
+                details=details,
             )
-            if event_sink:
-                await event_sink(running)
+            await emit(running)
             try:
                 value = await operation()
-                output_count = len(value) if isinstance(value, (list, tuple)) else None
                 event = StageEvent(
-                    stage=name, status=ProcessingStatus.SUCCEEDED, started_at=started_at,
-                    finished_at=datetime.now(UTC), input_count=input_count,
-                    output_count=output_count, duration_ms=int((perf_counter() - started) * 1000),
+                    stage=name,
+                    status=ProcessingStatus.PARTIAL
+                    if len(warnings) > warning_start
+                    else ProcessingStatus.SUCCEEDED,
+                    started_at=started_at,
+                    finished_at=datetime.now(UTC),
+                    input_count=input_count,
+                    output_count=output_count(value),
+                    duration_ms=int((perf_counter() - started) * 1000),
+                    details={
+                        **details,
+                        **output_snapshot(value),
+                        "warnings": warnings[warning_start:],
+                    },
                 )
             except Exception as exc:
                 event = StageEvent(
-                    stage=name, status=ProcessingStatus.FAILED, started_at=started_at,
-                    finished_at=datetime.now(UTC), input_count=input_count,
+                    stage=name,
+                    status=ProcessingStatus.FAILED,
+                    started_at=started_at,
+                    finished_at=datetime.now(UTC),
+                    input_count=input_count,
                     duration_ms=int((perf_counter() - started) * 1000),
-                    message=str(exc), error_code=type(exc).__name__,
+                    message=str(exc),
+                    error_code=type(exc).__name__,
+                    details={**details, "warnings": warnings[warning_start:]},
                 )
-                events.append(event)
-                if event_sink:
-                    await event_sink(event)
+                await emit(event)
                 raise
-            events.append(event)
-            if event_sink:
-                await event_sink(event)
+            await emit(event)
             return value
 
         try:
             plan = await stage(
                 PipelineStage.QUERY_PLANNED,
-                lambda: self.deps.query_planner.plan(request.idea, request.candidate_limit_per_source),
+                lambda: self.deps.query_planner.plan(
+                    request.idea, request.candidate_limit_per_source
+                ),
+                component=self.deps.query_planner,
             )
+            warnings.extend(plan.warnings)
+
+            async def retrieve_one(retriever: PaperRetriever) -> list[Paper]:
+                started_at = datetime.now(UTC)
+                started = perf_counter()
+                details = {
+                    "queries": [
+                        q.model_dump(mode="json")
+                        for q in plan.queries
+                        if q.source.value == retriever.source_name
+                    ],
+                    "demo": type(retriever).__name__.startswith("Demo"),
+                }
+                await emit(
+                    StageEvent(
+                        stage=PipelineStage.RETRIEVED,
+                        scope="source",
+                        source_name=retriever.source_name,
+                        status=ProcessingStatus.RUNNING,
+                        started_at=started_at,
+                        details=details,
+                    )
+                )
+                queries = [q for q in plan.queries if q.source.value == retriever.source_name]
+                papers = []
+                seen = set()
+                attempts = []
+                errors = []
+                for query in queries or [None]:
+                    query_start = perf_counter()
+                    try:
+                        query_plan = plan.model_copy(update={"queries": [query]}) if query else plan
+                        found = await retriever.search(query_plan)
+                        for paper in found:
+                            identity = paper.doi or paper.arxiv_id or paper.title.casefold()
+                            if identity not in seen:
+                                papers.append(paper)
+                                seen.add(identity)
+                        attempts.append(
+                            {
+                                "query": query.query if query else "default",
+                                "language": query.language if query else None,
+                                "time_window": query.time_window if query else None,
+                                "date_from": query.filters.get("date_from") if query else None,
+                                "date_to": query.filters.get("date_to") if query else None,
+                                "sort_by": query.sort_by if query else None,
+                                "status": "succeeded",
+                                "count": len(found),
+                                "duration_ms": int((perf_counter() - query_start) * 1000),
+                            }
+                        )
+                    except Exception as exc:  # noqa: BLE001 - per-query provider boundary
+                        errors.append(exc)
+                        attempts.append(
+                            {
+                                "query": query.query if query else "default",
+                                "language": query.language if query else None,
+                                "time_window": query.time_window if query else None,
+                                "date_from": query.filters.get("date_from") if query else None,
+                                "date_to": query.filters.get("date_to") if query else None,
+                                "sort_by": query.sort_by if query else None,
+                                "status": "failed",
+                                "count": 0,
+                                "error": str(exc),
+                            }
+                        )
+                    await emit(
+                        StageEvent(
+                            stage=PipelineStage.RETRIEVED,
+                            scope="source",
+                            source_name=retriever.source_name,
+                            status=ProcessingStatus.RUNNING,
+                            started_at=started_at,
+                            output_count=len(papers),
+                            details={
+                                **details,
+                                "query_results": list(attempts),
+                                **output_snapshot(papers),
+                            },
+                        )
+                    )
+                if errors:
+                    warnings.append(
+                        f"source {retriever.source_name} failed: "
+                        f"{len(errors)}/{len(queries) or 1} queries; {errors[-1]}"
+                    )
+                succeeded = any(a["status"] == "succeeded" for a in attempts)
+                status = ProcessingStatus.PARTIAL if errors else ProcessingStatus.SUCCEEDED
+                if not succeeded:
+                    status = ProcessingStatus.FAILED
+                if plan.source_limit:
+                    papers = reserve_recent(
+                        papers, plan.source_limit, plan.recent_from, plan.recent_share
+                    )
+                if plan.recent_from:
+                    details["recency"] = {
+                        "recent_from": plan.recent_from.isoformat(),
+                        "recent_count": sum(is_recent(p, plan.recent_from) for p in papers),
+                        "total": len(papers),
+                        "target_share": plan.recent_share,
+                    }
+                await emit(
+                    StageEvent(
+                        stage=PipelineStage.RETRIEVED,
+                        scope="source",
+                        source_name=retriever.source_name,
+                        status=status,
+                        started_at=started_at,
+                        finished_at=datetime.now(UTC),
+                        output_count=len(papers),
+                        duration_ms=int((perf_counter() - started) * 1000),
+                        message=str(errors[-1]) if errors else None,
+                        error_code=type(errors[-1]).__name__ if errors else None,
+                        details={**details, "query_results": attempts, **output_snapshot(papers)},
+                    )
+                )
+                return papers
 
             async def retrieve_all() -> list[Paper]:
                 results = await asyncio.gather(
-                    *(retriever.search(plan) for retriever in self.deps.retrievers),
-                    return_exceptions=True,
+                    *(retrieve_one(retriever) for retriever in self.deps.retrievers),
                 )
-                papers: list[Paper] = []
-                for retriever, result in zip(self.deps.retrievers, results, strict=True):
-                    if isinstance(result, BaseException):
-                        warnings.append(f"source {retriever.source_name} failed: {result}")
-                    else:
-                        papers.extend(result)
+                papers = [paper for result in results for paper in result]
                 if not papers:
                     raise RuntimeError("All paper sources failed or returned no results")
                 return papers
@@ -120,81 +263,242 @@ class ResearchPipeline:
                 PipelineStage.DEDUPED,
                 lambda: self.deps.merger.merge_and_deduplicate(retrieved),
                 len(retrieved),
+                component=self.deps.merger,
+            )
+            metadata_papers[:] = deduped
+            ranking_idea = request.idea.model_copy(
+                update={
+                    "search_terms": list(dict.fromkeys([*plan.concepts, *plan.synonyms])),
+                    "date_from": plan.date_from or request.idea.date_from,
+                    "date_to": plan.date_to or request.idea.date_to,
+                    "recent_from": plan.recent_from or request.idea.recent_from,
+                    "recent_share": plan.recent_share,
+                }
             )
             pool = await stage(
                 PipelineStage.PRE_RANKED,
                 lambda: self.deps.pre_ranker.rank(
-                    request.idea, deduped, request.pre_rank_pool_size
+                    ranking_idea, deduped, request.pre_rank_pool_size
                 ),
                 len(deduped),
+                component=self.deps.pre_ranker,
             )
 
             semaphore = asyncio.Semaphore(self.max_concurrency)
 
             async def process_one(paper: Paper) -> Paper | None:
                 async with semaphore:
+                    started_at = datetime.now(UTC)
+                    started = perf_counter()
+                    details = {
+                        "title": paper.title,
+                        "demo": type(self.deps.fulltext_processor).__name__.startswith("Demo"),
+                    }
+                    await emit(
+                        StageEvent(
+                            stage=PipelineStage.FULLTEXT_PROCESSED,
+                            scope="paper",
+                            paper_id=paper.paper_id,
+                            status=ProcessingStatus.RUNNING,
+                            started_at=started_at,
+                            details=details,
+                        )
+                    )
+                    outcome = ProcessingStatus.SUCCEEDED
+                    message = None
+                    processed_paper = None
                     try:
-                        return await self.deps.fulltext_processor.process(paper)
+                        processed_paper = await self.deps.fulltext_processor.process(paper)
                     # Adapter implementations come from independent groups and may
                     # wrap several third-party SDKs. This per-item boundary must
                     # convert any adapter failure into fallback/exclusion state.
                     except Exception as exc:  # noqa: BLE001
-                        if request.allow_abstract_fallback and paper.abstract:
-                            warnings.append(f"{paper.title}: full text unavailable; abstract fallback ({exc})")
-                            return paper
-                        warnings.append(f"{paper.title}: excluded because full text failed ({exc})")
-                        return None
+                        if request.allow_abstract_fallback:
+                            warnings.append(
+                                f"{paper.title}: full text unavailable; abstract fallback ({exc})"
+                            )
+                            processed_paper = paper
+                            outcome = ProcessingStatus.PARTIAL
+                            message = (
+                                f"全文处理失败，保留{'摘要' if paper.abstract else '元数据'}：{exc}"
+                            )
+                            paper.fulltext.parse_error = paper.fulltext.parse_error or str(exc)
+                        else:
+                            warnings.append(
+                                f"{paper.title}: excluded because full text failed ({exc})"
+                            )
+                            outcome = ProcessingStatus.SKIPPED
+                            message = f"全文处理失败，排除文献：{exc}"
+                    if (
+                        processed_paper is not None
+                        and request.require_fulltext
+                        and not processed_paper.fulltext.markdown_path
+                    ):
+                        processed_paper = None
+                        outcome = ProcessingStatus.SKIPPED
+                        message = f"仅保留全文已解析文献，排除当前文献。{message or ''}"
+                    await emit(
+                        StageEvent(
+                            stage=PipelineStage.FULLTEXT_PROCESSED,
+                            scope="paper",
+                            paper_id=paper.paper_id,
+                            status=outcome,
+                            started_at=started_at,
+                            finished_at=datetime.now(UTC),
+                            duration_ms=int((perf_counter() - started) * 1000),
+                            output_count=int(processed_paper is not None),
+                            message=message,
+                            details={
+                                **details,
+                                "papers": [paper_snapshot(processed_paper or paper)],
+                            },
+                        )
+                    )
+                    return processed_paper
 
             async def process_pool() -> list[Paper]:
                 processed = await asyncio.gather(*(process_one(p) for p in pool))
-                return [p for p in processed if p is not None]
+                eligible = [p for p in processed if p is not None]
+                processed_by_id = {p.paper_id: p for p in pool}
+                metadata_papers[:] = [processed_by_id.get(p.paper_id, p) for p in metadata_papers]
+                if len(eligible) < request.top_k:
+                    warnings.append(
+                        f"Only {len(eligible)} eligible papers remain for requested top_k={request.top_k}"
+                    )
+                return eligible
 
             processed = await stage(
-                PipelineStage.FULLTEXT_PROCESSED, process_pool, len(pool)
+                PipelineStage.FULLTEXT_PROCESSED,
+                process_pool,
+                len(pool),
+                component=self.deps.fulltext_processor,
             )
-            if request.require_fulltext:
-                processed = [p for p in processed if p.fulltext.markdown_path]
-            if len(processed) < request.top_k:
-                warnings.append(
-                    f"Only {len(processed)} eligible papers remain for requested top_k={request.top_k}"
+
+            async def trace_paper(name, paper, operation):
+                started_at = datetime.now(UTC)
+                started = perf_counter()
+                await emit(
+                    StageEvent(
+                        stage=name,
+                        scope="paper",
+                        paper_id=paper.paper_id,
+                        status=ProcessingStatus.RUNNING,
+                        started_at=started_at,
+                        details={"title": paper.title},
+                    )
                 )
+                try:
+                    value = await operation()
+                except Exception as exc:
+                    await emit(
+                        StageEvent(
+                            stage=name,
+                            scope="paper",
+                            paper_id=paper.paper_id,
+                            status=ProcessingStatus.FAILED,
+                            started_at=started_at,
+                            finished_at=datetime.now(UTC),
+                            duration_ms=int((perf_counter() - started) * 1000),
+                            message=str(exc),
+                            error_code=type(exc).__name__,
+                            details={"title": paper.title},
+                        )
+                    )
+                    raise
+                await emit(
+                    StageEvent(
+                        stage=name,
+                        scope="paper",
+                        paper_id=paper.paper_id,
+                        status=ProcessingStatus.SUCCEEDED,
+                        started_at=started_at,
+                        finished_at=datetime.now(UTC),
+                        output_count=1,
+                        duration_ms=int((perf_counter() - started) * 1000),
+                        details={"title": paper.title, **output_snapshot(value)},
+                    )
+                )
+                return value
 
             async def verify_all() -> list[Paper]:
-                return list(await asyncio.gather(
-                    *(self.deps.verifier.verify(request.idea, p) for p in processed)
-                ))
+                results = await asyncio.gather(
+                    *(
+                        trace_paper(
+                            PipelineStage.VERIFIED,
+                            p,
+                            lambda p=p: self.deps.verifier.verify(ranking_idea, p),
+                        )
+                        for p in processed
+                    ),
+                    return_exceptions=True,
+                )
+                for value in results:
+                    if isinstance(value, BaseException):
+                        raise value
+                return list(results)
 
-            verified = await stage(PipelineStage.VERIFIED, verify_all, len(processed))
+            verified = await stage(
+                PipelineStage.VERIFIED, verify_all, len(processed), component=self.deps.verifier
+            )
             final_papers = await stage(
                 PipelineStage.FINAL_RANKED,
-                lambda: self.deps.final_ranker.rank(request.idea, verified, request.top_k),
+                lambda: self.deps.final_ranker.rank(ranking_idea, verified, request.top_k),
                 len(verified),
+                component=self.deps.final_ranker,
             )
 
             async def summarize_all():
-                return list(await asyncio.gather(
-                    *(self.deps.summarizer.summarize(request.idea, p) for p in final_papers)
-                ))
+                results = await asyncio.gather(
+                    *(
+                        trace_paper(
+                            PipelineStage.SUMMARIZED,
+                            p,
+                            lambda p=p: self.deps.summarizer.summarize(request.idea, p),
+                        )
+                        for p in final_papers
+                    ),
+                    return_exceptions=True,
+                )
+                for value in results:
+                    if isinstance(value, BaseException):
+                        raise value
+                return list(results)
 
             summaries = await stage(
-                PipelineStage.SUMMARIZED, summarize_all, len(final_papers)
+                PipelineStage.SUMMARIZED,
+                summarize_all,
+                len(final_papers),
+                component=self.deps.summarizer,
             )
             report = await stage(
                 PipelineStage.REPORTED,
                 lambda: self.deps.report_writer.write(request.idea, final_papers, summaries),
                 len(final_papers),
+                component=self.deps.report_writer,
             )
             status = ProcessingStatus.PARTIAL if warnings else ProcessingStatus.SUCCEEDED
             return PipelineResult(
-                status=status, stage=PipelineStage.REPORTED, request=request,
-                papers=final_papers, summaries=summaries, report=report,
-                events=events, warnings=warnings,
+                status=status,
+                stage=PipelineStage.REPORTED,
+                request=request,
+                papers=final_papers,
+                metadata_papers=metadata_papers,
+                summaries=summaries,
+                report=report,
+                events=events,
+                progress_events=progress_events,
+                warnings=warnings,
             )
         # Top-level application boundary: MCP/UI callers receive a structured
         # failed result with audit events instead of an untyped transport crash.
         except Exception as exc:  # noqa: BLE001
             warnings.append(str(exc))
             return PipelineResult(
-                status=ProcessingStatus.FAILED, stage=PipelineStage.FAILED,
-                request=request, events=events, warnings=warnings,
+                status=ProcessingStatus.FAILED,
+                stage=PipelineStage.FAILED,
+                request=request,
+                metadata_papers=metadata_papers,
+                events=events,
+                progress_events=progress_events,
+                warnings=warnings,
             )

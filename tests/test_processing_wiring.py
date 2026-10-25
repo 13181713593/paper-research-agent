@@ -26,6 +26,7 @@ from paper_agent.adapters.openalex_retriever import OpenAlexRetriever
 from paper_agent.adapters.paper_merger import PaperMerger
 from paper_agent.adapters.query_planner import HeuristicQueryPlanner
 from paper_agent.adapters.semantic_scholar_retriever import SemanticScholarRetriever
+from paper_agent.adapters.short_review import ShortReviewWriter, review_length
 from paper_agent.bootstrap import build_agent
 from paper_agent.config import Settings
 from paper_agent.domain.models import Paper, ResearchIdea
@@ -33,8 +34,10 @@ from paper_agent.domain.models import Paper, ResearchIdea
 # Empty strings explicitly disable the optional remote backends so the wiring
 # tests never depend on keys sitting in the developer machine's environment.
 CLEAN_ENV = {
-    "OPENAI_API_KEY": "", "PAPER_AGENT_LLM_API_KEY": "",
-    "MINERU_API_KEY": "", "UNPAYWALL_EMAIL": "",
+    "OPENAI_API_KEY": "",
+    "PAPER_AGENT_LLM_API_KEY": "",
+    "MINERU_API_KEY": "",
+    "UNPAYWALL_EMAIL": "",
 }
 
 MARKDOWN_TEXT = """# A Study
@@ -69,9 +72,7 @@ class ProcessingWiringTest(unittest.TestCase):
         self.assertIsNone(components.summarizer._client)
         self.assertIsNone(components.report_writer._client)
         # Without MINERU_API_KEY the auto backend falls back to pypdf.
-        self.assertIsInstance(
-            components.fulltext_processor._parser._extractor, PypdfExtractor
-        )
+        self.assertIsInstance(components.fulltext_processor._parser._extractor, PypdfExtractor)
         # Assembling components performs no I/O and creates no work dirs.
         self.assertFalse(data_dir_created)
 
@@ -102,9 +103,7 @@ class ProcessingWiringTest(unittest.TestCase):
 
             async def run_chain():
                 summary = await components.summarizer.summarize(idea, paper)
-                report = await components.report_writer.write(
-                    idea, [paper], [summary]
-                )
+                report = await components.report_writer.write(idea, [paper], [summary])
                 return summary, report
 
             summary, report = asyncio.run(run_chain())
@@ -115,7 +114,8 @@ class ProcessingWiringTest(unittest.TestCase):
         self.assertLessEqual(len(summary.evidence[0].quote or ""), 500)
         self.assertIn("抽取式降级", summary.relevance_to_idea)
         self.assertIn("A Study", report.markdown)
-        self.assertIn("未来方向", report.markdown)
+        self.assertIn("参考文献", report.markdown)
+        self.assertTrue(300 <= review_length(report.executive_summary) <= 500)
         self.assertEqual(report.paper_ids, [paper.paper_id])
         self.assertEqual(len(report.evidence), len(summary.evidence))
         self.assertTrue(report.future_directions)
@@ -124,8 +124,11 @@ class ProcessingWiringTest(unittest.TestCase):
 
 
 REAL_RETRIEVERS = {
-    ArxivRetriever, CrossrefRetriever, OpenAlexRetriever,
-    SemanticScholarRetriever, EuropePmcRetriever,
+    ArxivRetriever,
+    CrossrefRetriever,
+    OpenAlexRetriever,
+    SemanticScholarRetriever,
+    EuropePmcRetriever,
 }
 
 
@@ -152,7 +155,7 @@ def test_all_modes_preserve_independent_wiring(mode, tmp_path):
     for field, real_type in {
         "fulltext_processor": PdfFullTextProcessor,
         "summarizer": LlmSummarizer,
-        "report_writer": LlmReportWriter,
+        "report_writer": ShortReviewWriter,
     }.items():
         kind = real_type if mode == "production" else type(getattr(expected, field))
         assert type(getattr(deps, field)) is kind
@@ -185,20 +188,27 @@ def test_dotenv_loading_and_explicit_settings_priority(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("planner_key,summary_key", [("", ""), ("fixture", ""), ("", "fixture")])
-def test_model_keys_are_independent(planner_key, summary_key, monkeypatch, tmp_path):
+def test_processing_prefers_summary_key_and_can_reuse_planner_key(
+    planner_key, summary_key, monkeypatch, tmp_path
+):
     monkeypatch.setenv("PAPER_AGENT_LLM_API_KEY", planner_key)
     monkeypatch.setenv("OPENAI_API_KEY", summary_key)
     settings = Settings(
-        app_env="production", data_dir=str(tmp_path),
-        llm_base_url="https://model.example.invalid/v1", llm_model="explicit-model",
+        app_env="production",
+        data_dir=str(tmp_path),
+        llm_base_url="https://model.example.invalid/v1",
+        llm_model="explicit-model",
     )
     deps = build_agent(settings)._pipeline.deps
     extractor = deps.query_planner.concept_extractor
     assert extractor.api_key == planner_key
     assert extractor.model == settings.llm_model
     assert extractor.base_url == settings.llm_base_url
-    assert (deps.summarizer._client is not None) == bool(summary_key)
-    assert deps.summarizer._client is deps.report_writer._client
+    assert (deps.summarizer._client is not None) == bool(summary_key or planner_key)
+    if summary_key:
+        assert deps.summarizer._client is deps.report_writer._client
+    else:
+        assert (deps.report_writer._client is not None) == bool(planner_key)
 
 
 def test_independent_workbench_loads_configuration_before_settings(tmp_path):

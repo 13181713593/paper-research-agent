@@ -39,7 +39,10 @@ def render_workbench(settings: Settings, idea: str) -> None:
         st.caption(
             "该入口始终使用真实处理组件。配置总结 API 后会发送论文材料；未配置则使用抽取式总结。"
         )
-        if st.button("处理论文并生成报告", type="primary", disabled=len(idea.strip()) < 10):
+        if (
+            st.button("处理论文并生成报告", type="primary", disabled=not idea.strip())
+            and idea.strip()
+        ):
             try:
                 papers = papers_from_arxiv_ids(ids)
                 with st.status("第三组正在处理真实论文……", expanded=True) as status:

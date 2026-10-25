@@ -69,17 +69,43 @@ def _first_sentences(text: str, *, limit: int = 2, max_chars: int = 400) -> str:
     return " ".join(sentences[:limit])[:max_chars]
 
 
-_STOPWORDS = frozenset({
-    "the", "and", "for", "with", "from", "that", "this", "are", "was", "were",
-    "been", "into", "onto", "over", "under", "our", "their", "its", "using",
-    "based", "via", "than", "then", "also", "such", "these", "those", "which",
-})
+_STOPWORDS = frozenset(
+    {
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "that",
+        "this",
+        "are",
+        "was",
+        "were",
+        "been",
+        "into",
+        "onto",
+        "over",
+        "under",
+        "our",
+        "their",
+        "its",
+        "using",
+        "based",
+        "via",
+        "than",
+        "then",
+        "also",
+        "such",
+        "these",
+        "those",
+        "which",
+    }
+)
 
 
 def _words(text: str) -> set[str]:
     return {
-        token.lower()
-        for token in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}|[\u4e00-\u9fff]{2,}", text)
+        token.lower() for token in re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}|[\u4e00-\u9fff]{2,}", text)
     } - _STOPWORDS
 
 
@@ -198,7 +224,9 @@ class LlmSummarizer:
             temperature=0.2,
         )
         payload = _SummaryPayload.model_validate(extract_json_object(raw))
-        if not (payload.core_problem.strip() or payload.method.strip() or payload.experiments.strip()):
+        if not (
+            payload.core_problem.strip() or payload.method.strip() or payload.experiments.strip()
+        ):
             raise ValueError("LLM summary payload is empty")
         return PaperSummary(
             paper_id=paper.paper_id,
@@ -253,9 +281,7 @@ class LlmSummarizer:
         ][:3]
         limitations = [
             sentence[:300]
-            for sentence in _SENTENCE_SPLIT.split(
-                re.sub(r"\s+", " ", pick("limitations")).strip()
-            )
+            for sentence in _SENTENCE_SPLIT.split(re.sub(r"\s+", " ", pick("limitations")).strip())
             if sentence.strip()
         ][:3]
         overlap = sorted(_words(idea.text) & _words(text))[:8]

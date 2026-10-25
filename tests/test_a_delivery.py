@@ -185,7 +185,9 @@ def test_merger_does_not_merge_similar_conference_and_journal_versions():
         title="Retrieval for Agents",
         venue=Venue(name="AI Conference", venue_type="conference"),
     )
-    journal = paper(title="Retrieval for Agents", venue=Venue(name="AI Journal", venue_type="journal"))
+    journal = paper(
+        title="Retrieval for Agents", venue=Venue(name="AI Journal", venue_type="journal")
+    )
     result = asyncio.run(PaperMerger().merge_and_deduplicate([conference, journal]))
     assert len(result) == 2
 

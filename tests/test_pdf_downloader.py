@@ -35,9 +35,7 @@ class RecordingTransport(httpx.MockTransport):
 
 
 def _pdf_response() -> httpx.Response:
-    return httpx.Response(
-        200, content=PDF_BYTES, headers={"content-type": "application/pdf"}
-    )
+    return httpx.Response(200, content=PDF_BYTES, headers={"content-type": "application/pdf"})
 
 
 class PdfDownloaderTest(unittest.TestCase):
@@ -120,9 +118,7 @@ class PdfDownloaderTest(unittest.TestCase):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(302, headers={"location": "/loop"})
 
-        downloader = self._downloader(
-            RecordingTransport(handler), max_redirects=1, retry_limit=0
-        )
+        downloader = self._downloader(RecordingTransport(handler), max_redirects=1, retry_limit=0)
         with tempfile.TemporaryDirectory() as tmp, self.assertRaises(ProviderUnavailableError):
             asyncio.run(downloader.download(_paper("https://example.org/loop"), Path(tmp)))
 

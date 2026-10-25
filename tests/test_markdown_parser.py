@@ -43,11 +43,7 @@ Coverage of non-English text remains limited.
 
 def make_pdf(text: str) -> bytes:
     """Generate a minimal single-page PDF containing ``text`` (ASCII only)."""
-    stream = (
-        f"BT /F1 24 Tf 72 720 Td ({text}) Tj ET".encode("ascii")
-        if text
-        else b"BT ET"
-    )
+    stream = f"BT /F1 24 Tf 72 720 Td ({text}) Tj ET".encode("ascii") if text else b"BT ET"
     objects: list[bytes] = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -69,8 +65,7 @@ def make_pdf(text: str) -> bytes:
     for offset in offsets[1:]:
         out += f"{offset:010d} 00000 n \n".encode("ascii")
     out += (
-        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
-        f"startxref\n{xref_offset}\n%%EOF\n"
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
     ).encode("ascii")
     return bytes(out)
 

@@ -76,6 +76,7 @@ def http_get_json(
     timeout: float = 20.0,
     max_retries: int = 3,
     initial_backoff: float = 0.5,
+    max_retry_after: float = 120.0,
 ) -> Any:
     """Blocking GET returning parsed JSON with retry/backoff.
 
@@ -105,7 +106,7 @@ def http_get_json(
 
         if response.status_code == 429:
             if attempt < max_retries:
-                time.sleep(_retry_after(response, fallback=backoff))
+                time.sleep(min(max_retry_after, _retry_after(response, fallback=backoff)))
                 backoff *= 2
                 continue
             raise ProviderRateLimitedError(f"{url} rate limited after {max_retries} retries")
@@ -121,7 +122,9 @@ def http_get_json(
         # search endpoints means the URL/path is wrong or a proxy intercepted
         # the request — silently returning "no results" would hide the real
         # failure from the pipeline's per-source warnings.
-        raise ProviderResponseError(f"{url} returned HTTP {response.status_code}: {response.text[:200]}")
+        raise ProviderResponseError(
+            f"{url} returned HTTP {response.status_code}: {response.text[:200]}"
+        )
 
 
 def parse_date(value: str | None) -> date | None:
@@ -170,7 +173,7 @@ def normalize_doi(doi: str | None) -> str | None:
     doi = doi.strip()
     for prefix in ("https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "doi.org/"):
         if doi.lower().startswith(prefix):
-            doi = doi[len(prefix):]
+            doi = doi[len(prefix) :]
             break
     return doi or None
 

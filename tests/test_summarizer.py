@@ -113,7 +113,9 @@ class SummarizerTest(unittest.TestCase):
         summary = asyncio.run(summarizer.summarize(IDEA, paper))
         self.assertFalse(summary.generated_from_fulltext)
         self.assertEqual(summary.experiments, NOT_STATED)
-        self.assertEqual(summary.core_problem, "We present a dataset for testing. It contains 10 tasks.")
+        self.assertEqual(
+            summary.core_problem, "We present a dataset for testing. It contains 10 tasks."
+        )
         self.assertEqual(summary.evidence[0].section, "abstract")
 
     def test_no_evidence_at_all_produces_placeholder_summary(self):

@@ -17,7 +17,9 @@ class FailingRetriever:
 class PipelineTest(unittest.TestCase):
     def test_demo_pipeline_is_end_to_end(self):
         request = PipelineRequest(
-            idea=ResearchIdea(text="multisource evidence-aware paper retrieval for academic research"),
+            idea=ResearchIdea(
+                text="multisource evidence-aware paper retrieval for academic research"
+            ),
             top_k=2,
             pre_rank_pool_size=3,
         )
