@@ -41,6 +41,7 @@ class Settings:
     request_timeout_seconds: float = 30.0
     data_dir: str = "data"
     reranker_model: str | None = None
+    embedding_model: str | None = None
     reranker_local_files_only: bool = True
     # Group 3: download / parse / summarize / report
     unpaywall_email: str = ""
@@ -63,6 +64,7 @@ class Settings:
             ),
             data_dir=os.getenv("PAPER_AGENT_DATA_DIR", "data"),
             reranker_model=os.getenv("PAPER_AGENT_RERANKER_MODEL") or None,
+            embedding_model=os.getenv("PAPER_AGENT_EMBEDDING_MODEL") or None,
             reranker_local_files_only=os.getenv("PAPER_AGENT_RERANKER_LOCAL_ONLY", "1") != "0",
             unpaywall_email=os.getenv("UNPAYWALL_EMAIL", ""),
             download_timeout_seconds=max(

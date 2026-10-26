@@ -103,6 +103,7 @@ def build_ranking_prompt(idea: ResearchIdea) -> str:
 @dataclass(frozen=True, slots=True)
 class AcademicRankingConfig:
     model_name: str | None = None
+    embedding_model: str | None = None
     local_files_only: bool = True
     batch_size: int = 16
     reference_year: int | None = None
@@ -148,6 +149,50 @@ class BgeReranker:
             except Exception as exc:  # noqa: BLE001
                 self._failed = f"lexical-fallback (reranker failed: {type(exc).__name__})"
                 logger.warning("Academic reranker unavailable: %s", exc)
+                return None, self._failed
+
+
+class EmbeddingMatcher:
+    """Optional semantic matcher for high-recall metadata pre-ranking."""
+
+    def __init__(self, config: AcademicRankingConfig):
+        self.config = config
+        self._model = None
+        self._failed: str | None = None
+        self._lock = threading.Lock()
+
+    def predict(self, query: str, passages: list[str]) -> tuple[list[float] | None, str]:
+        if not self.config.embedding_model:
+            return None, "bm25-fallback (no embedding configured)"
+        with self._lock:
+            if self._failed:
+                return None, self._failed
+            try:
+                from sentence_transformers import SentenceTransformer
+
+                if self._model is None:
+                    self._model = SentenceTransformer(
+                        self.config.embedding_model,
+                        local_files_only=self.config.local_files_only,
+                    )
+                vectors = self._model.encode(
+                    [query, *passages],
+                    batch_size=self.config.batch_size,
+                    normalize_embeddings=True,
+                    convert_to_numpy=True,
+                    show_progress_bar=False,
+                )
+                query_vector = vectors[0]
+                scores = [
+                    max(0.0, min(1.0, (float(query_vector @ vector) + 1.0) / 2.0))
+                    for vector in vectors[1:]
+                ]
+                if len(scores) != len(passages) or not all(math.isfinite(v) for v in scores):
+                    raise ValueError("Embedding model must return one finite score per paper")
+                return scores, f"Embedding:{self.config.embedding_model}; cosine"
+            except Exception as exc:  # noqa: BLE001
+                self._failed = f"bm25-fallback (embedding failed: {type(exc).__name__})"
+                logger.warning("Academic embedding matcher unavailable: %s", exc)
                 return None, self._failed
 
 
@@ -226,20 +271,32 @@ class AcademicPreRanker:
     def __init__(self, config: AcademicRankingConfig | None = None):
         self.config = config or AcademicRankingConfig()
         self.rewriter = AcademicIntentRewriter()
+        self.embedding = EmbeddingMatcher(self.config)
 
     async def rank(self, idea: ResearchIdea, papers: Sequence[Paper], limit: int) -> list[Paper]:
         if limit < 1:
             raise ValueError("limit must be positive")
         intent = await self.rewriter.rewrite(idea)
         relevance_model = MetadataRelevance(intent, papers)
+        metadata = [_metadata(paper) for paper in papers]
+        semantic_scores, semantic_backend = await asyncio.to_thread(
+            self.embedding.predict, build_ranking_prompt(intent), metadata
+        )
         results = []
-        for paper in papers:
-            text = _metadata(paper)
+        for index, paper in enumerate(papers):
+            text = metadata[index]
             # Required concepts can appear only in full text; defer that check.
             screening = intent.model_copy(update={"required_terms": []})
             if not _eligible(screening, paper, text):
                 continue
-            relevance, matched_terms, anchor = relevance_model.score(paper)
+            lexical, matched_terms, anchor = relevance_model.score(paper)
+            semantic = semantic_scores[index] if semantic_scores is not None else lexical
+            anchor_score = 1.0 if anchor else 0.0
+            relevance = (
+                0.50 * semantic + 0.30 * lexical + 0.20 * anchor_score
+                if semantic_scores is not None
+                else lexical
+            )
             if relevance < 0.08 or (not anchor and not intent.required_terms):
                 continue
             required = sum(_contains(t, text) for t in intent.required_terms)
@@ -249,7 +306,8 @@ class AcademicPreRanker:
             )
             result = paper.model_copy(deep=True)
             result.scores = ScoreBreakdown(
-                lexical=relevance,
+                lexical=lexical,
+                semantic=semantic,
                 intent_match=match,
                 recency=recency,
                 venue_quality=venue,
@@ -258,9 +316,11 @@ class AcademicPreRanker:
                 + 0.06 * match
                 + relevance * (0.02 * recency + 0.01 * venue + 0.01 * citations),
                 formula_version="academic-v1-pre",
+                display_score=2 * min(1.0, relevance),
                 explanation=(
-                    f"双语主题匹配 + 标题加权 BM25；命中={matched_terms}; "
-                    f"主题相关性={relevance:.3f}; 年份与引用仅作相关文献间的辅助信号"
+                    f"双语主题匹配 + 标题加权 BM25 + {semantic_backend}; 命中={matched_terms}; "
+                    f"主题相关性={relevance:.3f}; 展示分数={2 * min(1.0, relevance):.3f}/2; "
+                    "年份与引用仅作相关文献间的辅助信号"
                 ),
             )
             results.append(result)
@@ -282,9 +342,19 @@ class AcademicFinalRanker(AcademicPreRanker):
             raise ValueError("limit must be positive")
         intent = await self.rewriter.rewrite(idea)
         relevance_model = MetadataRelevance(intent, papers)
+        metadata = [_metadata(paper) for paper in papers]
+        semantic_scores, semantic_backend = await asyncio.to_thread(
+            self.embedding.predict, build_ranking_prompt(intent), metadata
+        )
         candidates = []
-        for paper in papers:
-            relevance, _, anchor = relevance_model.score(paper)
+        for index, paper in enumerate(papers):
+            lexical, _, anchor = relevance_model.score(paper)
+            semantic = semantic_scores[index] if semantic_scores is not None else lexical
+            relevance = (
+                0.50 * semantic + 0.30 * lexical + 0.20 * float(anchor)
+                if semantic_scores is not None
+                else lexical
+            )
             if relevance < 0.08 or (not anchor and not intent.required_terms):
                 continue
             excerpt, quality, source = await asyncio.to_thread(_evidence, paper, intent)
@@ -298,8 +368,17 @@ class AcademicFinalRanker(AcademicPreRanker):
         )
         results = []
         for index, (paper, passage, quality, source) in enumerate(candidates):
-            lexical, _, _ = relevance_model.score(paper)
-            relevance = scores[index] if scores is not None else lexical
+            lexical, _, anchor = relevance_model.score(paper)
+            semantic = semantic_scores[index] if semantic_scores is not None else lexical
+            relevance = (
+                scores[index]
+                if scores is not None
+                else (
+                    0.50 * semantic + 0.30 * lexical + 0.20 * float(anchor)
+                    if semantic_scores is not None
+                    else lexical
+                )
+            )
             match = (
                 sum(_contains(t, passage) for t in intent.required_terms)
                 / len(intent.required_terms)
@@ -324,10 +403,11 @@ class AcademicFinalRanker(AcademicPreRanker):
                     weights, [relevance, match, evidence, recency, venue, citations], strict=True
                 )
             )
-            total *= min(1.0, lexical * 2)
+            total *= min(1.0, relevance * 2)
             result = paper.model_copy(deep=True)
             result.scores = ScoreBreakdown(
                 lexical=lexical,
+                semantic=semantic,
                 reranker=relevance if scores is not None else None,
                 intent_match=match,
                 evidence_coverage=evidence,
@@ -335,12 +415,14 @@ class AcademicFinalRanker(AcademicPreRanker):
                 venue_quality=venue,
                 citation_signal=citations,
                 final=min(1.0, total),
+                display_score=2 * min(1.0, total),
                 formula_version="academic-v1-final",
                 explanation=(
-                    f"backend={backend}; prompt={PROMPT_VERSION}; evidence={source}; "
+                    f"backend={backend}; semantic={semantic_backend}; prompt={PROMPT_VERSION}; evidence={source}; "
                     f"focus={intent.ranking_focus}; weights={weights}; "
                     f"relevance={relevance:.3f}, intent={match:.3f}, evidence={evidence:.3f}, "
-                    f"recency={recency:.3f}, venue_preference={venue:.3f}, citations={citations:.3f}"
+                    f"recency={recency:.3f}, venue_preference={venue:.3f}, citations={citations:.3f}; "
+                    f"display_score={2 * min(1.0, total):.3f}/2"
                 ),
             )
             results.append(result)

@@ -123,6 +123,24 @@ class AcademicRankingTest(unittest.TestCase):
         self.assertEqual(result[0].paper_id, papers[1].paper_id)
         self.assertEqual(result[0].scores.reranker, 0.9)
 
+    def test_embedding_hybrid_is_used_and_display_score_is_out_of_two(self):
+        ranker = AcademicPreRanker(self.config)
+        papers = [
+            Paper(title="Graph neural networks for recommendation"),
+            Paper(title="Graph neural networks unrelated application"),
+        ]
+        with patch.object(
+            ranker.embedding,
+            "predict",
+            return_value=([0.95, 0.05], "test-embedding"),
+        ):
+            result = asyncio.run(ranker.rank(self.idea, papers, 2))
+        self.assertEqual(result[0].paper_id, papers[0].paper_id)
+        self.assertEqual(result[0].scores.semantic, 0.95)
+        self.assertGreaterEqual(result[0].scores.display_score, 0)
+        self.assertLessEqual(result[0].scores.display_score, 2)
+        self.assertIn("展示分数=", result[0].scores.explanation)
+
     def test_backend_normalizes_logits_and_loads_once(self):
         encoder = MagicMock()
         encoder.return_value.predict.return_value = [-1000.0, 1000.0]

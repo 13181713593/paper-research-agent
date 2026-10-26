@@ -62,6 +62,7 @@ def build_agent(settings: Settings | None = None) -> PaperResearchAgent:
     if settings.app_env in {"ranking", "production"}:
         config = AcademicRankingConfig(
             model_name=settings.reranker_model,
+            embedding_model=settings.embedding_model,
             local_files_only=settings.reranker_local_files_only,
         )
         deps.pre_ranker = AcademicPreRanker(config)

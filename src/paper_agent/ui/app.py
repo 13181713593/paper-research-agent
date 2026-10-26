@@ -312,7 +312,14 @@ if result:
                 else "未确认",
             }
             if not is_workbench:
-                row.update({"代码状态": paper.code.status.value, "最终分数": paper.scores.final})
+                row.update(
+                    {
+                        "代码状态": paper.code.status.value,
+                        "最终分数（满分2）": paper.scores.display_score
+                        if paper.scores.display_score is not None
+                        else (2 * paper.scores.final if paper.scores.final is not None else None),
+                    }
+                )
             rows.append(row)
         st.dataframe(rows, hide_index=True, use_container_width=True)
         for rank, paper in enumerate(result.papers, 1):

@@ -227,7 +227,11 @@ class LlmReportWriter:
             if meta_bits:
                 lines.append("- " + " · ".join(meta_bits))
             if paper.scores.final is not None:
-                lines.append(f"- 相关性评分：{paper.scores.final:.3f}")
+                score = paper.scores.display_score
+                if score is not None:
+                    lines.append(f"- 相关性评分：{score:.3f}/2")
+                else:
+                    lines.append(f"- 相关性评分：{paper.scores.final:.3f}/1")
             if summary is None:
                 lines.extend(["- 未生成总结。", ""])
                 continue

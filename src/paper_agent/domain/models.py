@@ -145,6 +145,7 @@ class ScoreBreakdown(StrictModel):
     intent_match: Annotated[float | None, Field(ge=0, le=1)] = None
     evidence_coverage: Annotated[float | None, Field(ge=0, le=1)] = None
     final: Annotated[float | None, Field(ge=0, le=1)] = None
+    display_score: Annotated[float | None, Field(ge=0, le=2)] = None
     formula_version: str | None = None
     explanation: str | None = None
 

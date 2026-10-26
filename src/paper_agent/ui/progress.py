@@ -79,7 +79,7 @@ def paper_table(papers: list[dict], stage: PipelineStage) -> None:
         if stage in {PipelineStage.PRE_RANKED, PipelineStage.FINAL_RANKED, PipelineStage.VERIFIED}:
             row.update(
                 {
-                    "分数": scores.get("final"),
+                    "分数（满分2）": scores.get("display_score", 2 * scores["final"] if scores.get("final") is not None else None),
                     "证据覆盖度": scores.get("evidence_coverage"),
                     "评分解释": scores.get("explanation"),
                 }
