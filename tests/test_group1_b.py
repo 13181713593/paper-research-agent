@@ -80,6 +80,7 @@ class QueryPlannerTest(unittest.TestCase):
                 PaperSource.CROSSREF,
                 PaperSource.SEMANTIC_SCHOLAR,
                 PaperSource.EUROPE_PMC,
+                PaperSource.OPENREVIEW,
             },
         )
         for q in plan.queries:
@@ -195,7 +196,17 @@ class HttpUtilTest(unittest.TestCase):
         ok.json.return_value = {"data": []}
         with mock.patch("paper_agent.adapters._retriever_utils.requests.get") as get:
             get.side_effect = [limited, ok]
-            with mock.patch("paper_agent.adapters._retriever_utils.time.sleep") as sleep:
+            clock = [1000.0]
+            with (
+                mock.patch(
+                    "paper_agent.adapters._retriever_utils.time.monotonic",
+                    side_effect=lambda: clock[0],
+                ),
+                mock.patch(
+                    "paper_agent.adapters._retriever_utils.time.sleep",
+                    side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay),
+                ) as sleep,
+            ):
                 result = http_get_json("http://example.com", max_retries=2)
         self.assertEqual(result, {"data": []})
         sleep.assert_called_once_with(7.0)
@@ -208,8 +219,20 @@ class HttpUtilTest(unittest.TestCase):
         ok.json.return_value = {}
         with mock.patch("paper_agent.adapters._retriever_utils.requests.get") as get:
             get.side_effect = [limited, ok]
-            with mock.patch("paper_agent.adapters._retriever_utils.time.sleep") as sleep:
-                http_get_json("http://example.com", max_retries=2)
+            clock = [1000.0]
+            with (
+                mock.patch(
+                    "paper_agent.adapters._retriever_utils.time.monotonic",
+                    side_effect=lambda: clock[0],
+                ),
+                mock.patch(
+                    "paper_agent.adapters._retriever_utils.time.sleep",
+                    side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay),
+                ) as sleep,
+            ):
+                http_get_json(
+                    "http://example.com", max_retries=2, total_timeout=150, max_retry_after=120
+                )
         waited = sleep.call_args[0][0]
         self.assertGreater(waited, 60)
         self.assertLessEqual(waited, 120)

@@ -16,6 +16,7 @@ import asyncio
 import os
 import re
 from datetime import date
+from html import unescape
 from typing import Any
 
 from paper_agent.adapters._retriever_utils import (
@@ -37,7 +38,7 @@ from paper_agent.domain.models import (
 )
 
 _API_URL = "https://api.crossref.org/works"
-_SELECT_FIELDS = "DOI,title,author,container-title,issued,published,abstract,is-referenced-by-count,URL,type,link"
+_SELECT_FIELDS = "DOI,title,author,container-title,issued,published,abstract,is-referenced-by-count,URL,type,link,publisher"
 _JATS_TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -46,7 +47,7 @@ def _strip_jats(abstract: str | None) -> str | None:
     if not abstract:
         return None
     text = _JATS_TAG_RE.sub(" ", abstract)
-    cleaned = " ".join(text.split())
+    cleaned = " ".join(unescape(text).split())
     return cleaned or None
 
 
@@ -175,7 +176,15 @@ class CrossrefRetriever:
             year=year,
             abstract=_strip_jats(item.get("abstract")),
             doi=doi,
-            venue=Venue(name=venue_name) if venue_name else None,
+            venue=Venue(
+                name=venue_name,
+                publisher=item.get("publisher"),
+                venue_type={"journal-article": "journal", "proceedings-article": "conference"}.get(
+                    item.get("type")
+                ),
+            )
+            if venue_name
+            else None,
             citation_count=item.get("is-referenced-by-count"),
             bibtex=bibtex,
             landing_page_url=url,
@@ -195,7 +204,10 @@ class CrossrefRetriever:
                 SourceRecord(
                     source=PaperSource.CROSSREF,
                     source_id=doi or url or title,
-                    raw_metadata={"crossref_type": item.get("type")},
+                    raw_metadata={
+                        "crossref_type": item.get("type"),
+                        "citation_count": item.get("is-referenced-by-count"),
+                    },
                 )
             ],
         )

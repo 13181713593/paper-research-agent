@@ -88,7 +88,7 @@ async def test_a_components_integrate_with_pipeline_and_partial_failure(arxiv_fa
     assert (deduped.input_count, deduped.output_count) == (1 if arxiv_fails else 2, 1)
     expected = {PaperSource.OPENALEX} if arxiv_fails else {PaperSource.ARXIV, PaperSource.OPENALEX}
     assert {r.source for r in result.papers[0].source_records} == expected
-    assert any("source arxiv failed" in w for w in result.warnings) == arxiv_fails
+    assert any("arXiv" in w for w in result.warnings) == arxiv_fails
 
 
 @pytest.fixture
@@ -208,7 +208,7 @@ def test_three_groups_end_to_end(production_fixture, source_fails, fulltext_fail
     assert result.report.paper_ids == [paper.paper_id]
     assert "参考文献" in result.report.markdown
     assert 300 <= len("".join(result.report.executive_summary.split())) <= 500
-    assert any("source crossref failed" in warning for warning in result.warnings) == source_fails
+    assert any("Crossref" in warning for warning in result.warnings) == source_fails
     assert any("abstract fallback" in warning for warning in result.warnings) == fulltext_fails
     if fulltext_fails:
         assert pdf_response.called  # Multiple public PDF candidates may be attempted.
@@ -248,7 +248,7 @@ def test_production_ui_runs_real_offline_chain(production_fixture, monkeypatch, 
         st.cache_resource.clear()
 
 
-@pytest.mark.skipif(os.getenv("RUN_NETWORK_SMOKE") != "1", reason="显式开启才进行真实五源检索")
+@pytest.mark.skipif(os.getenv("RUN_NETWORK_SMOKE") != "1", reason="显式开启才进行真实多源检索")
 def test_production_live_smoke(tmp_path):
     from paper_agent.bootstrap import build_agent
     from paper_agent.config import Settings

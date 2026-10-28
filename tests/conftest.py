@@ -9,6 +9,11 @@ import requests
 
 @pytest.fixture(autouse=True)
 def isolated_runtime(tmp_path, monkeypatch, request):
+    from paper_agent.adapters import _retriever_utils
+
+    monkeypatch.setattr(_retriever_utils, "_HOST_COOLDOWNS", {})
+    monkeypatch.setattr(_retriever_utils, "_HOST_NEXT", {})
+    monkeypatch.setattr(_retriever_utils, "_HOST_FAILURES", {})
     # 付费冒烟仍须独立设置开关并显式注入凭证，不自动读取开发者 .env。
     paid_smoke = (
         request.node.name == "test_live_llm_summary_and_report_without_fallback"
@@ -21,6 +26,7 @@ def isolated_runtime(tmp_path, monkeypatch, request):
                 "OPENAI_API_KEY",
                 "MINERU_API_KEY",
                 "SEMANTIC_SCHOLAR_API_KEY",
+                "OPENALEX_API_KEY",
                 "UNPAYWALL_EMAIL",
                 "CROSSREF_MAILTO",
             }:

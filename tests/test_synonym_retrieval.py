@@ -25,9 +25,9 @@ async def test_late_synonyms_are_used_and_ambiguous_ocr_is_qualified():
     plan = await HeuristicQueryPlanner(Extractor(), expand_queries=True).plan(
         ResearchIdea(text="场景文本检测与识别"), 30
     )
-    assert "text spotting" in plan.query_terms
-    assert "end-to-end text spotting" in plan.query_terms
     assert "optical character recognition in natural scenes" in plan.query_terms
+    assert len([t for t in plan.query_terms if t.isascii()]) <= 3
+    assert "未单独请求" in plan.term_notes["E2E text spotting"]
     assert "OCR" not in plan.query_terms and "scene text" not in plan.query_terms
     assert len(plan.query_terms) <= 7
     assert plan.source_limit == 30

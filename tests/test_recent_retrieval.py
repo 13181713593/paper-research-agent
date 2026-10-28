@@ -104,10 +104,10 @@ async def test_dates_and_sort_reach_each_real_http_adapter(source, adapter, modu
         assert "FIRST_PDATE:[2024-10-25 TO 2026-10-25]" in params["query"]
         assert params["query"].endswith("sort_date:y")
     else:
-        assert url.endswith("/paper/search/bulk")
+        assert url.endswith("/paper/search")
         assert params["publicationDateOrYear"] == "2024-10-25:2026-10-25"
         assert params["sort"] == "publicationDate:desc"
-        assert "limit" not in params
+        assert params["limit"] == 3
 
 
 @pytest.mark.asyncio
