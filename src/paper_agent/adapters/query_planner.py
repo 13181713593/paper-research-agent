@@ -22,6 +22,7 @@ from paper_agent.adapters._concept_extraction import (
     _synonyms_for,
 )
 from paper_agent.adapters.query_expansion import search_variants
+from paper_agent.adapters.query_rewriting import chinese_query, focused_variants, format_expression
 from paper_agent.domain.models import (
     PaperSource,
     ResearchIdea,
@@ -38,6 +39,7 @@ _PLANNED_SOURCES = (
     PaperSource.CROSSREF,
     PaperSource.SEMANTIC_SCHOLAR,
     PaperSource.EUROPE_PMC,
+    PaperSource.OPENREVIEW,
 )
 
 
@@ -134,10 +136,10 @@ class HeuristicQueryPlanner:
         local = HeuristicConceptExtractor().extract(idea.text)
         english = [
             c
-            for c in dict.fromkeys([*local.concepts, *concepts])
+            for c in dict.fromkeys([*concepts, *local.concepts])
             if re.search("[a-zA-Z]", c) and not re.search(r"[\u4e00-\u9fff]", c)
         ]
-        if not chinese:
+        if not chinese and len(idea.text.split()) <= 10:
             english.insert(0, idea.text.strip())
         english = [
             term
@@ -156,6 +158,20 @@ class HeuristicQueryPlanner:
             )
         )
         variants, term_notes = search_variants(english, candidates)
+        variants = focused_variants(idea.text, english, variants, maximum=3)
+        chinese_term = chinese_query(idea.text) if chinese else None
+        # Known English concepts carry long-input intent; do not additionally
+        # send the entire Chinese instruction as an exact phrase.
+        if variants and len(idea.text) > 40:
+            chinese_term = None
+        if not variants and not chinese_term:
+            chinese_term = " ".join(idea.text.split())[:120]
+        for original in term_notes:
+            term_notes[original] = (
+                "用于短检索式或其主题约束"
+                if any(original.casefold() in v.casefold() for v in variants)
+                else "未单独请求：每个来源最多3条英文表达，保留核心主题与应用约束"
+            )
         filters = {}
         for name in ("required_terms", "excluded_terms"):
             if getattr(idea, name):
@@ -183,32 +199,52 @@ class HeuristicQueryPlanner:
         for source in _PLANNED_SOURCES:
             # Execute alternatives independently and union their results. This
             # works even for sources without reliable Boolean OR syntax.
-            terms = [(v, "en") for v in variants]
-            if chinese:
-                terms.append((idea.text.strip(), "zh"))
-            if not terms:
-                terms = [(idea.text.strip(), "en")]
+            if source in (PaperSource.ARXIV, PaperSource.EUROPE_PMC):
+                # arXiv's Boolean API ANDs every term, and Europe PMC's
+                # TITLE_ABS expression joins phrases with AND, so each query for
+                # these boolean sources must be a single phrase. Use the
+                # importance-ordered core concepts (plus the Chinese variant)
+                # directly instead of the combined variants, so qualifiers like
+                # "edge computing" stay searchable without AND collapse or
+                # dropped qualifiers.
+                terms = [(c, "en") for c in english]
+                if chinese_term:
+                    terms.append((chinese_term, "zh" if chinese else "en"))
+                if not terms:
+                    terms = [(idea.text.strip(), "en")]
+            else:
+                terms = [(v, "en") for v in variants]
+                if chinese_term:
+                    terms.append((chinese_term, "zh" if chinese else "en"))
+                if not terms:
+                    terms = [(idea.text.strip(), "en")]
+            expanded: list[tuple[str, str]] = []
             for term, language in terms:
                 if idea.required_terms and source != PaperSource.ARXIV:
                     term += " " + " ".join(idea.required_terms)
-                if source == PaperSource.ARXIV:
-                    term = f'"{term.replace(chr(34), "")}"'
-                    strategy = "学术短语匹配；多检索式取并集"
-                elif source == PaperSource.EUROPE_PMC:
-                    term = f'TITLE_ABS:"{term.replace(chr(34), "")}"'
-                    strategy = "限定标题与摘要，避免生物医学泛词召回"
-                elif source == PaperSource.OPENALEX:
-                    term = f'"{term.replace(chr(34), "")}"'
-                    strategy = "短语相关性检索"
-                else:
-                    strategy = "题名与学术元数据相关性检索"
+                expanded.append((format_expression(term, source.value), language))
+            expanded = list(dict.fromkeys(expanded))
+
+            if source == PaperSource.ARXIV:
+                strategy = "学术短语匹配；多检索式取并集"
+            elif source == PaperSource.EUROPE_PMC:
+                strategy = "限定标题与摘要，避免生物医学泛词召回"
+            elif source == PaperSource.OPENALEX:
+                strategy = "短语相关性检索"
+            elif source == PaperSource.OPENREVIEW:
+                strategy = "OpenReview 标题、摘要与关键词检索"
+            else:
+                strategy = "题名与学术元数据相关性检索"
+
+            total_en = sum(1 for _, language in expanded if language == "en")
+            for expression, language in expanded:
                 for start, end, budget, window_label in cohorts:
                     if budget < 1:
                         continue
                     queries.append(
                         SearchQuery(
                             source=source,
-                            query=term,
+                            query=expression,
                             language=language,
                             strategy=strategy
                             + (
@@ -223,9 +259,9 @@ class HeuristicQueryPlanner:
                                 math.ceil(
                                     budget
                                     / (
-                                        sum(lang == "en" for _, lang in terms)
+                                        total_en
                                         if language == "en"
-                                        else len(terms)
+                                        else len(expanded)
                                     )
                                 ),
                             ),
@@ -245,7 +281,7 @@ class HeuristicQueryPlanner:
             queries=queries,
             concepts=english,
             synonyms=candidates,
-            query_terms=variants + ([idea.text.strip()] if chinese or not variants else []),
+            query_terms=variants + ([chinese_term] if chinese_term else []),
             term_notes=term_notes,
             source_limit=limit,
             date_from=window_from,

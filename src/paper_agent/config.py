@@ -39,6 +39,7 @@ class Settings:
     app_env: str = "demo"
     max_concurrency: int = 4
     request_timeout_seconds: float = 30.0
+    source_timeout_seconds: float = 45.0
     data_dir: str = "data"
     reranker_model: str | None = None
     embedding_model: str | None = None
@@ -59,6 +60,9 @@ class Settings:
         return cls(
             app_env=os.getenv("PAPER_AGENT_ENV", "demo"),
             max_concurrency=max(1, int(os.getenv("PAPER_AGENT_MAX_CONCURRENCY", "4"))),
+            source_timeout_seconds=max(
+                1.0, float(os.getenv("PAPER_AGENT_SOURCE_TIMEOUT_SECONDS", "45"))
+            ),
             request_timeout_seconds=max(
                 1.0, float(os.getenv("PAPER_AGENT_REQUEST_TIMEOUT_SECONDS", "30"))
             ),

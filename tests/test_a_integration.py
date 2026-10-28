@@ -221,7 +221,9 @@ def test_three_groups_end_to_end(production_fixture, source_fails, fulltext_fail
         assert paper.fulltext.sha256 and paper.fulltext.parse_quality is not None
 
 
-def test_production_ui_runs_real_offline_chain(production_fixture, monkeypatch, tmp_path):
+def test_production_ui_runs_real_offline_chain(
+    production_fixture, monkeypatch, tmp_path, finish_ui_research
+):
     import streamlit as st
     from streamlit.testing.v1 import AppTest
 
@@ -235,6 +237,7 @@ def test_production_ui_runs_real_offline_chain(production_fixture, monkeypatch, 
             app = AppTest.from_file(str(app_path), default_timeout=20).run()
             app.text_area[0].set_value("scientific evidence summarization")
             app.button[0].click().run()
+            finish_ui_research(app)
         assert not app.exception
         result = app.session_state["pipeline_result"]
         assert result.status == ProcessingStatus.PARTIAL  # 默认 Top-k=5，夹具只有一篇。

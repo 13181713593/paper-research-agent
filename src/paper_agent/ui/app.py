@@ -10,6 +10,7 @@ from paper_agent.application.processing_benchmark import benchmark_to_markdown
 from paper_agent.bootstrap import build_agent
 from paper_agent.config import Settings, load_local_env
 from paper_agent.domain.models import PipelineRequest, ProcessingStatus, ResearchIdea
+from paper_agent.domain.provider_messages import display_message
 from paper_agent.domain.publication_policy import is_recent
 from paper_agent.ui.markdown_exports import (
     evidence_audit,
@@ -57,7 +58,7 @@ def render_running_research(job, stages):
         store_research_result(result)
         st.rerun()
     if error:
-        st.error(error)
+        st.error(display_message(error))
     st.caption(f"当前任务：{job.request.idea.text}")
     PipelineProgress(stages, key="pipeline_live").replay(
         events, ProcessingStatus.FAILED if error else None
@@ -108,9 +109,9 @@ with st.sidebar:
     else:
         mode_descriptions = {
             "demo": "demo：全部使用离线演示组件，不执行真实检索或全文下载。",
-            "retrieval": "retrieval：五源真实检索与去重；排序、全文处理、总结和报告仍为演示组件。",
+            "retrieval": "retrieval：六源真实检索与去重；排序、全文处理、总结和报告仍为演示组件。",
             "ranking": "ranking：第二组真实预排序、证据确认和重排；检索、全文处理和总结仍为演示组件。",
-            "production": "production：五源真实检索 → 去重 → 第二组排序 → 第三组全文处理与总结报告。",
+            "production": "production：六源真实检索 → 去重 → 第二组排序 → 第三组全文处理与总结报告。",
         }
         st.info(mode_descriptions.get(settings.app_env, f"未知模式：{settings.app_env}"))
         if settings.app_env in {"retrieval", "production"}:
@@ -277,7 +278,7 @@ if result:
     if result.warnings:
         with st.expander("运行提示与降级原因"):
             for warning in result.warnings:
-                st.warning(warning)
+                st.warning(display_message(warning))
 
     papers_tab, markdown_tab, summaries_tab, report_tab, benchmark_tab, audit_tab, metadata_tab = (
         st.tabs(
@@ -303,6 +304,13 @@ if result:
                 "题目": paper.title,
                 "年份": str(paper.year) if paper.year else "未提供",
                 "发表位置": (paper.venue.name if paper.venue else None) or "未提供",
+                "作者单位": "；".join(
+                    dict.fromkeys(
+                        [*paper.institutions, *(i for a in paper.authors for i in a.affiliations)]
+                    )
+                )
+                or "未提供",
+                "被引次数": paper.citation_count if paper.citation_count is not None else "未提供",
                 "DOI": paper.doi or "未提供",
                 "arXiv": paper.arxiv_id or "—",
                 "开放获取": "是"
@@ -312,14 +320,13 @@ if result:
                 else "未确认",
             }
             if not is_workbench:
-                row.update(
-                    {
-                        "代码状态": paper.code.status.value,
-                        "最终分数（满分2）": paper.scores.display_score
-                        if paper.scores.display_score is not None
-                        else (2 * paper.scores.final if paper.scores.final is not None else None),
-                    }
-                )
+                score = paper.scores.display_score
+                if score is None and paper.scores.final is not None:
+                    score = 2 * paper.scores.final
+                row.update({
+                    "代码状态": paper.code.status.value,
+                    "最终分数（满分2）": score if score is not None else "未提供",
+                })
             rows.append(row)
         st.dataframe(rows, hide_index=True, use_container_width=True)
         for rank, paper in enumerate(result.papers, 1):
@@ -336,6 +343,12 @@ if result:
                         "arXiv 未提供机构字段，不代表作者没有单位" if metadata_received else missing
                     )
                     st.markdown(f"**单位**：{institutions}")
+                    st.markdown(
+                        f"**发表位置**：{paper.venue.name if paper.venue and paper.venue.name else '数据源未提供'}"
+                    )
+                    st.markdown(
+                        f"**被引次数**：{paper.citation_count if paper.citation_count is not None else '数据源未提供'}"
+                    )
                     st.markdown(f"**摘要**：{paper.abstract or missing}")
                 with right:
                     sources = list(
@@ -470,15 +483,23 @@ if result:
         st.dataframe(
             [
                 {
-                    "题目": p.title,
+                    "题目": p.title or "未提供",
                     "作者": ", ".join(a.name for a in p.authors),
-                    "年份": p.year,
-                    "DOI": p.doi,
-                    "arXiv": p.arxiv_id,
-                    "来源": ", ".join(dict.fromkeys(r.source.value for r in p.source_records)),
+                    "作者单位": "；".join(
+                        dict.fromkeys(
+                            [*p.institutions, *(i for a in p.authors for i in a.affiliations)]
+                        )
+                    )
+                    or "未提供",
+                    "发表位置": (p.venue.name if p.venue else None) or "未提供",
+                    "被引次数": p.citation_count if p.citation_count is not None else "未提供",
+                    "年份": p.year if p.year is not None else "未提供",
+                    "DOI": p.doi or "未提供",
+                    "arXiv": p.arxiv_id or "未提供",
+                    "来源": ", ".join(dict.fromkeys(r.source.value for r in p.source_records)) or "未提供",
                     "全文状态": "已解析" if p.fulltext.markdown_path else "仅元数据/摘要",
-                    "获取失败原因": p.fulltext.parse_error,
-                    "摘要": p.abstract,
+                    "获取失败原因": display_message(p.fulltext.parse_error),
+                    "摘要": p.abstract or "未提供",
                 }
                 for p in retained
             ],
@@ -499,12 +520,12 @@ if result:
                     "阶段": event.stage.value,
                     "范围": event.scope,
                     "数据库": event.source_name,
-                    "文献": event.details.get("title"),
+                    "文献": event.details.get("title") or "未提供",
                     "状态": event.status.value,
                     "输入": event.input_count,
                     "输出": event.output_count,
                     "耗时（毫秒）": event.duration_ms,
-                    "错误或说明": event.message,
+                    "错误或说明": event.message or "未提供",
                 }
                 for event in (result.progress_events or result.events)
             ],

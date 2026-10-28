@@ -25,6 +25,7 @@ from bibtexparser.bibdatabase import BibDatabase
 
 from paper_agent.domain.errors import ProviderUnavailableError
 from paper_agent.domain.models import Paper, PaperSource, SearchPlan, SearchQuery
+from paper_agent.domain.request_budget import remaining_time, wait_with_budget
 
 from .bibtex_mapper import BibTexMapper, BibTexMappingError
 from .retrieval_common import normalize_arxiv, normalize_doi
@@ -99,6 +100,7 @@ class _RateGate:
 
     @classmethod
     def wait(cls, delay: float, max_wait: float = 120.0) -> None:
+        max_wait = remaining_time(max_wait)
         started = time.monotonic()
         while True:
             with cls.lock:
@@ -116,7 +118,7 @@ class _RateGate:
                     )
             # Release the lock while waiting, then recheck for another instance's
             # newer 429. A rejected request delays every instance in this process.
-            time.sleep(remaining)
+            wait_with_budget(remaining)
 
     @classmethod
     def defer(cls, delay: float) -> None:
@@ -167,7 +169,10 @@ class ArxivRetriever:
         def send(request: Any, **kwargs: Any) -> Any:
             _RateGate.wait(self.config.delay_seconds, self.config.max_retry_wait)
             if kwargs.get("timeout") is None:
-                kwargs["timeout"] = (self.config.timeout_connect, self.config.timeout_read)
+                kwargs["timeout"] = (
+                    remaining_time(self.config.timeout_connect),
+                    remaining_time(self.config.timeout_read),
+                )
             self._last_response = None
             response = original_send(request, **kwargs)
             self._last_response = response
@@ -230,13 +235,18 @@ class ArxivRetriever:
         terms = [term.strip('"') for term in terms if term.strip('"')]
         if not terms:
             raise ProviderUnavailableError("arXiv query is blank")
+        # arXiv's Boolean API ANDs every term, so a multi-phrase variant
+        # collapses recall (verified: 3 phrases -> 0 hits, top phrase -> 76).
+        # The planner emits alternatives as separate queries; search only the
+        # leading phrase and let the query union preserve coverage.
+        terms = terms[:1]
         # Standard single-word form avoids unnecessary phrase quoting; actual
         # phrases and punctuation still need quotes to preserve their meaning.
         expression = " AND ".join(
             f"all:{term}" if re.fullmatch(r"\w+", term) else f'all:"{term.replace(chr(34), "")}"'
             for term in terms
         )
-        result = f"({expression})" if len(terms) > 1 else expression
+        result = expression
 
         required = filters.get("required_terms") or []
         for term in required:
@@ -299,12 +309,12 @@ class ArxivRetriever:
                 if delay is None:
                     base = self.config.rate_limit_backoff if status == 429 else 3.0
                     delay = min(base * 2**attempt, self.config.max_retry_wait)
-                if delay > self.config.max_retry_wait:
+                if delay > remaining_time(self.config.max_retry_wait):
                     raise self._translate_error(exc) from exc
                 if status in {429, 503}:
                     _RateGate.defer(delay)
                 if delay > 0:
-                    await asyncio.to_thread(time.sleep, delay)
+                    await asyncio.to_thread(wait_with_budget, delay)
         raise ProviderUnavailableError("arXiv request failed") from last_error
 
     def _fetch_sync(self, search: Any) -> list[Any]:

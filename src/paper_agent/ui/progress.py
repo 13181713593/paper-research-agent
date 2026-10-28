@@ -7,6 +7,7 @@ import json
 import streamlit as st
 
 from paper_agent.domain.models import PipelineStage, ProcessingStatus, StageEvent
+from paper_agent.domain.provider_messages import display_message, provider_message
 
 STAGE_LABELS = {
     PipelineStage.QUERY_PLANNED: "查询规划",
@@ -25,6 +26,7 @@ SOURCE_LABELS = {
     "openalex": "OpenAlex",
     "semantic_scholar": "Semantic Scholar",
     "europe_pmc": "Europe PMC",
+    "openreview": "OpenReview",
 }
 STATUS_LABELS = {
     ProcessingStatus.RUNNING: "⏳ 处理中",
@@ -33,6 +35,10 @@ STATUS_LABELS = {
     ProcessingStatus.FAILED: "❌ 失败",
     ProcessingStatus.SKIPPED: "⏭️ 已排除",
 }
+
+
+def _shown(value, missing="未提供"):
+    return missing if value is None or value == "" else value
 
 
 def is_legacy_empty_result(error):
@@ -45,16 +51,24 @@ def query_result_row(query):
         query.get("error")
     )
     return {
-        "检索式": query["query"],
-        "语言": query.get("language"),
-        "时间窗口": query.get("time_window"),
+        "检索式": query.get("query") or "未提供",
+        "语言": query.get("language") or "未提供",
+        "时间窗口": query.get("time_window") or "未提供",
         "日期范围": f"{query.get('date_from') or '不限'} 至 {query.get('date_to') or '不限'}",
         "排序": "发表时间倒序" if query.get("sort_by") == "publication_date" else "相关性",
         "状态": "未匹配"
         if empty
-        else {"succeeded": "查询成功", "failed": "请求失败"}.get(query["status"], query["status"]),
+        else {"succeeded": "查询成功", "failed": "暂未完成", "skipped": "已暂停"}.get(
+            query["status"], query["status"]
+        ),
         "返回数量": query["count"],
-        "说明": "查询已返回，未找到匹配文献" if empty else query.get("error"),
+        "耗时（秒）": round(query.get("duration_ms", 0) / 1000, 2),
+        "说明": "查询已返回，未找到匹配文献"
+        if empty
+        else (
+            query.get("message")
+            or (provider_message(query["error"]) if query.get("error") else "未提供")
+        ),
     }
 
 
@@ -68,32 +82,38 @@ def paper_table(papers: list[dict], stage: PipelineStage) -> None:
         fulltext = paper.get("fulltext") or {}
         row = {
             "序号": rank,
-            "文献题目": paper["title"],
-            "作者": ", ".join(paper.get("authors", [])),
-            "年份": paper.get("year"),
-            "来源数据库": ", ".join(SOURCE_LABELS.get(s, s) for s in paper.get("sources", [])),
-            "DOI": paper.get("doi"),
-            "arXiv ID": paper.get("arxiv_id"),
-            "文献链接": paper.get("url"),
+        "文献题目": paper.get("title") or "未提供",
+            "作者": ", ".join(paper.get("authors", [])) or "未提供",
+            "作者单位": "；".join(paper.get("institutions", [])) or "数据源未提供",
+            "发表位置": paper.get("venue") or "数据源未提供",
+            "被引次数": paper.get("citation_count") if paper.get("citation_count") is not None else "未提供",
+            "年份": paper.get("year") if paper.get("year") is not None else "未提供",
+            "来源数据库": ", ".join(SOURCE_LABELS.get(s, s) for s in paper.get("sources", [])) or "未提供",
+            "DOI": paper.get("doi") or "未提供",
+            "arXiv ID": paper.get("arxiv_id") or "未提供",
+            "文献链接": paper.get("url") or "未提供",
         }
         if stage in {PipelineStage.PRE_RANKED, PipelineStage.FINAL_RANKED, PipelineStage.VERIFIED}:
+            score = scores.get("display_score")
+            if score is None and scores.get("final") is not None:
+                score = 2 * scores["final"]
             row.update(
                 {
-                    "分数（满分2）": scores.get("display_score", 2 * scores["final"] if scores.get("final") is not None else None),
-                    "证据覆盖度": scores.get("evidence_coverage"),
-                    "评分解释": scores.get("explanation"),
+                    "分数（满分2）": _shown(score),
+                    "证据覆盖度": _shown(scores.get("evidence_coverage")),
+                    "评分解释": _shown(scores.get("explanation")),
                 }
             )
         if stage == PipelineStage.FULLTEXT_PROCESSED:
             row.update(
                 {
-                    "访问状态": fulltext.get("access_status"),
-                    "解析器": fulltext.get("parser_name"),
-                    "解析质量": fulltext.get("parse_quality"),
-                    "解析路径": fulltext.get("markdown_path"),
+                    "访问状态": _shown(fulltext.get("access_status")),
+                    "解析器": _shown(fulltext.get("parser_name")),
+                    "解析质量": _shown(fulltext.get("parse_quality")),
+                    "解析路径": _shown(fulltext.get("markdown_path")),
                 }
             )
-        row["摘要"] = paper.get("abstract")
+        row["摘要"] = paper.get("abstract") or "未提供"
         rows.append(row)
     st.dataframe(
         rows,
@@ -101,6 +121,20 @@ def paper_table(papers: list[dict], stage: PipelineStage) -> None:
         width="stretch",
         column_config={"文献链接": st.column_config.LinkColumn("文献链接")},
     )
+    st.caption(
+        "被引次数为数据源检索时返回的统计，并非引用率；不同数据库口径不同。空值表示未提供，0表示明确返回零次。"
+    )
+    with st.expander("查看完整摘要与作者单位"):
+        selection = st.selectbox(
+            "选择文献",
+            range(len(papers)),
+            format_func=lambda i: papers[i]["title"],
+            key=f"abstract_{stage.value}_{papers[0]['paper_id']}",
+        )
+        selected = papers[selection]
+        st.write(selected.get("abstract") or "该数据源未提供摘要；这不代表论文没有摘要。")
+        for author in selected.get("author_affiliations", []):
+            st.write(f"{author['name']}：{'；'.join(author['affiliations']) or '单位未提供'}")
 
 
 def _select_stage(key, value):
@@ -246,14 +280,14 @@ class PipelineProgress:
                     f"输出：{event.output_count if event.output_count is not None else '—'} 条"
                 )
             if event.message:
-                st.error(event.message)
+                st.error(display_message(event.message, event.error_code))
             for warning in details.get("warnings", []):
                 if is_legacy_empty_result(warning):
                     st.info(
                         "历史记录中 arXiv 的空结果曾被标为失败；这表示该检索式未匹配，已找到的文献仍然有效。"
                     )
                 else:
-                    st.warning(warning)
+                    st.warning(display_message(warning))
 
             if name == PipelineStage.QUERY_PLANNED and "plan" in details:
                 plan = details["plan"]
@@ -270,7 +304,7 @@ class PipelineProgress:
                         {
                             "数据库": SOURCE_LABELS.get(q["source"], q["source"]),
                             "语言": q.get("language") or "默认",
-                            "时间窗口": q.get("time_window"),
+                            "时间窗口": q.get("time_window") or "未提供",
                             "排序": "发表时间倒序"
                             if q.get("sort_by") == "publication_date"
                             else "相关性",
@@ -288,7 +322,7 @@ class PipelineProgress:
                 if plan.get("query_terms"):
                     st.write("本轮实际检索用词：", "；".join(plan["query_terms"]))
                     st.caption(
-                        "每条表达分别请求数据库，结果合并去重；最多使用6条英文表达及中文原始主题。"
+                        "每个来源最多3条英文表达，并可补充短中文主题；长文本按核心任务与应用约束改写。"
                         "请求是否成功、各词返回数量请查看“多源数据库检索”阶段。"
                     )
                 if plan.get("term_notes"):
@@ -355,7 +389,11 @@ class PipelineProgress:
                                     "部分检索式未匹配文献，属于正常空结果；已召回文献仍保留。"
                                 )
                             else:
-                                st.error(f"{source.error_code or '检索失败'}：{source.message}")
+                                st.warning(
+                                    display_message(
+                                        source.message, source.error_code, source.source_name
+                                    )
+                                )
                         if source.details.get("query_results"):
                             st.dataframe(
                                 [query_result_row(q) for q in source.details["query_results"]],
@@ -383,9 +421,9 @@ class PipelineProgress:
                 st.dataframe(
                     [
                         {
-                            "文献题目": c.details.get("title"),
+                            "文献题目": c.details.get("title") or "未提供",
                             "状态": STATUS_LABELS[c.status],
-                            "说明": c.message,
+                            "说明": c.message or "未提供",
                             "耗时（秒）": c.duration_ms / 1000
                             if c.duration_ms is not None
                             else None,
@@ -397,7 +435,7 @@ class PipelineProgress:
                 )
                 if name == PipelineStage.FULLTEXT_PROCESSED:
                     attempts = [
-                        {"文献": c.details.get("title"), **attempt}
+                        {"文献": c.details.get("title") or "未提供", **attempt}
                         for c in children
                         for p in c.details.get("papers", [])
                         for attempt in p.get("fulltext", {}).get("attempts", [])

@@ -27,6 +27,7 @@ class PaperSource(StrEnum):
     CROSSREF = "crossref"
     OPENALEX = "openalex"
     EUROPE_PMC = "europe_pmc"
+    OPENREVIEW = "openreview"
     CORE = "core"
     CNKI = "cnki"
     OTHER = "other"
