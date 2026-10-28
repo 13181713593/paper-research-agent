@@ -38,6 +38,9 @@ def load_local_env(path: str | Path | None = None) -> None:
 class Settings:
     app_env: str = "demo"
     max_concurrency: int = 4
+    # 每个检索来源的总时间预算。来源内查询是顺序执行的，45 秒会把
+    # OpenAlex 这类需要 6 条查询的来源截断，候选池与可下载全文随之变少。
+    source_timeout_seconds: float = 150.0
     request_timeout_seconds: float = 30.0
     data_dir: str = "data"
     reranker_model: str | None = None
@@ -59,6 +62,10 @@ class Settings:
         return cls(
             app_env=os.getenv("PAPER_AGENT_ENV", "demo"),
             max_concurrency=min(32, max(1, int(os.getenv("PAPER_AGENT_MAX_CONCURRENCY", "4")))),
+            source_timeout_seconds=max(
+                10.0,
+                float(os.getenv("PAPER_AGENT_SOURCE_TIMEOUT_SECONDS", "150")),
+            ),
             request_timeout_seconds=max(
                 1.0, float(os.getenv("PAPER_AGENT_REQUEST_TIMEOUT_SECONDS", "30"))
             ),

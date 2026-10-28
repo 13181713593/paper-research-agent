@@ -80,10 +80,17 @@ def build_processing_components(
         mineru_api_key=os.getenv("MINERU_API_KEY") or None,
         executor=parser_executor,
     )
+    # 显式选了远端解析时备一个本地解析器：MinerU 掉线就降级，不改判定为失败。
+    fallback_parser = (
+        PdfMarkdownParser(backend="pypdf", executor=parser_executor)
+        if settings.markdown_backend in {"mineru", "auto"} and parser.parser_name == "mineru"
+        else None
+    )
     processor = PdfFullTextProcessor(
         resolver=resolver,
         downloader=downloader,
         parser=parser,
+        fallback_parser=fallback_parser,
         work_dir=Path(settings.data_dir) / "fulltext",
     )
     llm_client = _build_llm_client(settings, allow_planner_key=True)

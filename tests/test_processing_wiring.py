@@ -169,6 +169,7 @@ def test_dotenv_loading_and_explicit_settings_priority(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text(
         "# 仅测试配置，不是真实凭证\nPAPER_AGENT_ENV=production\n"
         "PAPER_AGENT_MAX_CONCURRENCY=2\nPAPER_AGENT_LLM_MODEL='file-model'\n"
+        "PAPER_AGENT_SOURCE_TIMEOUT_SECONDS=90\n"
         "OPENAI_API_KEY=fixture-not-a-real-key\nPAPER_AGENT_LLM_API_KEY=fixture-only\n",
         encoding="utf-8",
     )
@@ -176,9 +177,12 @@ def test_dotenv_loading_and_explicit_settings_priority(tmp_path, monkeypatch):
     load_local_env()
     assert Settings.from_env().app_env == "production"
     assert Settings.from_env().llm_model == "environment-model"
+    assert Settings.from_env().source_timeout_seconds == 90
     assert os.environ["OPENAI_API_KEY"] == os.environ["PAPER_AGENT_LLM_API_KEY"] == ""
     agent = build_agent()
     assert agent._pipeline.max_concurrency == 2
+    # 来源级别检索预算必须从配置传入流水线，否则会退回库内默认值。
+    assert agent._pipeline.source_timeout_seconds == 90
     assert isinstance(agent._pipeline.deps.fulltext_processor, PdfFullTextProcessor)
     assert agent._pipeline.deps.summarizer._client is None
     assert not agent._pipeline.deps.query_planner.concept_extractor.api_key

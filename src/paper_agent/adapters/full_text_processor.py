@@ -56,10 +56,13 @@ class PdfFullTextProcessor:
         parse_timeout_seconds: float | None = None,
         download_concurrency: int = 8,
         parse_concurrency: int = 3,
+        fallback_parser: MarkdownParser | None = None,
     ) -> None:
         self._resolver = resolver
         self._downloader = downloader
         self._parser = parser
+        # 远端解析（MinerU）失败时退到本地 pypdf，避免整篇因解析服务不可用而失败。
+        self._fallback_parser = fallback_parser
         self._pdf_dir = Path(work_dir) / "pdfs"
         self._markdown_dir = Path(work_dir) / "markdown"
         remote = getattr(parser, "parser_name", None) == "mineru"
@@ -332,34 +335,74 @@ class PdfFullTextProcessor:
         paper.fulltext.markdown_path = None
         paper.fulltext.parse_quality = None
         paper.fulltext.parse_warnings = []
+        parser = self._parser
+        degraded = False
         try:
-            markdown_path, quality = await self._parser.parse(pdf_path, self._markdown_dir)
+            markdown_path, quality = await parser.parse(pdf_path, self._markdown_dir)
         except Exception as exc:
-            paper.fulltext.parse_error = f"{type(exc).__name__}: {exc}"
             paper.fulltext.attempts.append(
                 {
                     "stage": "parse",
                     "status": "failed",
-                    "error": paper.fulltext.parse_error[:400],
+                    "error": f"{type(exc).__name__}: {exc}"[:400],
                     "error_type": type(exc).__name__,
                 }
             )
-            raise
-        paper.fulltext.attempts.append(
-            {
-                "stage": "parse",
-                "status": "succeeded",
-                "reason": f"PDF 转 Markdown 完成，解析器={getattr(self._parser, 'parser_name', 'unknown')}",
-            }
-        )
+            if self._fallback_parser is None:
+                paper.fulltext.parse_error = f"{type(exc).__name__}: {exc}"
+                raise
+            # 远端解析不可用时降级到本地解析：宁可少几个公式图表，也不要把
+            # 已经下载成功的 PDF 记成“转 Markdown 失败”。
+            parser = self._fallback_parser
+            try:
+                markdown_path, quality = await parser.parse(pdf_path, self._markdown_dir)
+            except Exception as fallback_exc:
+                paper.fulltext.parse_error = (
+                    f"{type(exc).__name__}: {exc}；"
+                    f"本地降级失败 {type(fallback_exc).__name__}: {fallback_exc}"
+                )
+                paper.fulltext.attempts.append(
+                    {
+                        "stage": "parse",
+                        "status": "failed",
+                        "error": paper.fulltext.parse_error[:400],
+                        "error_type": type(fallback_exc).__name__,
+                    }
+                )
+                raise fallback_exc from exc
+            degraded = True
+            paper.fulltext.attempts.append(
+                {
+                    "stage": "parse",
+                    "status": "succeeded",
+                    "reason": (
+                        f"远端解析失败（{type(exc).__name__}），"
+                        f"已回退本地 {getattr(parser, 'parser_name', 'pypdf')}"
+                    ),
+                }
+            )
+        else:
+            paper.fulltext.attempts.append(
+                {
+                    "stage": "parse",
+                    "status": "succeeded",
+                    "reason": (
+                        f"PDF 转 Markdown 完成，解析器={getattr(parser, 'parser_name', 'unknown')}"
+                    ),
+                }
+            )
         paper.fulltext.markdown_path = str(markdown_path)
         try:
             meta = json.loads(Path(markdown_path).with_suffix(".parse.json").read_text("utf-8"))
             paper.fulltext.parse_warnings = [str(w) for w in meta.get("warnings", [])]
         except (OSError, ValueError, TypeError, AttributeError):
             pass
-        parser_name = getattr(self._parser, "parser_name", None)
-        parser_version = getattr(self._parser, "parser_version", None)
+        if degraded:
+            paper.fulltext.parse_warnings.append(
+                "远端解析不可用，本次 Markdown 由本地解析器生成，公式与表格可能不完整。"
+            )
+        parser_name = getattr(parser, "parser_name", None)
+        parser_version = getattr(parser, "parser_version", None)
         if parser_name:
             paper.fulltext.parser_name = parser_name
         if parser_version:

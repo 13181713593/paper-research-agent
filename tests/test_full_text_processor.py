@@ -68,11 +68,14 @@ class FakeParser:
         return markdown_path, self.quality
 
 
-def _processor(tmp: str, resolver=None, downloader=None, parser=None) -> PdfFullTextProcessor:
+def _processor(
+    tmp: str, resolver=None, downloader=None, parser=None, fallback_parser=None
+) -> PdfFullTextProcessor:
     return PdfFullTextProcessor(
         resolver=resolver or FakeResolver(),
         downloader=downloader or FakeDownloader(),
         parser=parser or FakeParser(),
+        fallback_parser=fallback_parser,
         work_dir=Path(tmp),
     )
 
@@ -144,6 +147,37 @@ class FullTextProcessorTest(unittest.TestCase):
             processed = asyncio.run(processor.process(paper))
             self.assertTrue(processed.fulltext.markdown_path)
             self.assertIsNone(processed.fulltext.parse_error)
+
+    def test_remote_parse_failure_falls_back_to_local_parser(self):
+        remote = FakeParser(failure=ProviderUnavailableError("mineru down"))
+        local = FakeParser(quality=0.5)
+        with tempfile.TemporaryDirectory() as tmp:
+            processor = _processor(tmp, parser=remote, fallback_parser=local)
+            paper = Paper(title="Fallback paper")
+            processed = asyncio.run(processor.process(paper))
+            self.assertTrue(processed.fulltext.markdown_path)
+            self.assertIsNone(processed.fulltext.parse_error)
+            self.assertEqual(remote.calls, 1)
+            self.assertEqual(local.calls, 1)
+            self.assertEqual(processed.fulltext.parse_quality, 0.5)
+            parse_attempts = [a for a in processed.fulltext.attempts if a.get("stage") == "parse"]
+            self.assertEqual([a["status"] for a in parse_attempts], ["failed", "succeeded"])
+            self.assertIn("回退本地", parse_attempts[-1]["reason"])
+            self.assertTrue(
+                any("本地解析器" in warning for warning in processed.fulltext.parse_warnings)
+            )
+
+    def test_fallback_failure_still_raises_with_both_errors(self):
+        remote = FakeParser(failure=ProviderUnavailableError("mineru down"))
+        local = FakeParser(failure=FullTextParseError("no text layer"))
+        with tempfile.TemporaryDirectory() as tmp:
+            processor = _processor(tmp, parser=remote, fallback_parser=local)
+            paper = Paper(title="Double failure")
+            with self.assertRaises(FullTextParseError):
+                asyncio.run(processor.process(paper))
+            self.assertIn("ProviderUnavailableError", paper.fulltext.parse_error or "")
+            self.assertIn("本地降级失败", paper.fulltext.parse_error or "")
+            self.assertIsNone(paper.fulltext.markdown_path)
 
     def test_concurrent_calls_are_isolated(self):
         with tempfile.TemporaryDirectory() as tmp:

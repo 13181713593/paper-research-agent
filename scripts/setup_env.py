@@ -38,6 +38,13 @@ SPECS: tuple[Spec, ...] = (
     Spec("PAPER_AGENT_MAX_CONCURRENCY", "默认", "检索并发上限（1-32）", "-", "缺省为 4"),
     Spec("PAPER_AGENT_REQUEST_TIMEOUT_SECONDS", "默认", "单次检索请求超时（秒）", "-", "缺省为 30"),
     Spec(
+        "PAPER_AGENT_SOURCE_TIMEOUT_SECONDS",
+        "默认",
+        "每个来源的总检索预算（秒）",
+        "-",
+        "缺省为 150；调小会中途截断多查询来源，候选池与全文篇数随之减少",
+    ),
+    Spec(
         "OPENAI_API_KEY",
         "必需",
         "单篇总结与综合报告的主 Key，同时供查询规划复用",

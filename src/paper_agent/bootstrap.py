@@ -75,7 +75,11 @@ def build_agent(settings: Settings | None = None) -> PaperResearchAgent:
         deps.fulltext_processor = components.fulltext_processor
         deps.summarizer = components.summarizer
         deps.report_writer = components.report_writer
-    pipeline = ResearchPipeline(deps, max_concurrency=settings.max_concurrency)
+    pipeline = ResearchPipeline(
+        deps,
+        max_concurrency=settings.max_concurrency,
+        source_timeout_seconds=settings.source_timeout_seconds,
+    )
     return PaperResearchAgent(pipeline)
 
 
