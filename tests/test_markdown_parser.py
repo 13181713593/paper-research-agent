@@ -11,12 +11,13 @@ import pytest
 
 from paper_agent.adapters.markdown_parser import (
     ExtractedDocument,
+    MineruExtractor,
     PdfMarkdownParser,
     _text_to_markdown,
     score_parse_quality,
     split_sections,
 )
-from paper_agent.domain.errors import FullTextParseError
+from paper_agent.domain.errors import FullTextParseError, ProviderUnavailableError
 
 try:
     import pypdf  # noqa: F401
@@ -304,6 +305,48 @@ def test_mineru_preserves_math_saves_images_and_does_not_leak_token(tmp_path):
     meta = json.loads(path.with_suffix(".parse.json").read_text())
     assert len(meta["assets"]) == 1
     assert len(requests) == 4
+
+
+def test_mineru_retries_transient_failures_before_giving_up(tmp_path):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(make_pdf("Retry me"))
+    base = _mineru_transport({"result/full.md": "# T\n\n" + "正文内容足够长。" * 20})
+    polls = {"count": 0}
+
+    def respond(request):
+        if "extract-results" in request.url.path:
+            polls["count"] += 1
+            if polls["count"] == 1:
+                return httpx.Response(503, text="busy")
+        return base.handle_request(request)
+
+    extractor = MineruExtractor(
+        api_key="test-token",
+        transport=httpx.MockTransport(respond),
+        retry_backoff_seconds=0,
+    )
+    document = asyncio.run(extractor.extract(pdf))
+    assert polls["count"] >= 2
+    assert "正文内容足够长" in document.text
+
+
+def test_mineru_does_not_retry_auth_failures(tmp_path):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(make_pdf("Denied"))
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(401, json={"code": -1, "msg": "invalid token"})
+
+    extractor = MineruExtractor(
+        api_key="bad-token",
+        transport=httpx.MockTransport(respond),
+        retry_backoff_seconds=0,
+    )
+    with pytest.raises(ProviderUnavailableError):
+        asyncio.run(extractor.extract(pdf))
+    assert len(requests) == 1
 
 
 def test_mineru_image_path_with_spaces_remains_readable_in_exports(tmp_path):

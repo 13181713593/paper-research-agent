@@ -356,6 +356,14 @@ class PypdfExtractor:
         )
 
 
+class _TransientMineruError(ProviderUnavailableError):
+    """网络抖动、超时或服务端 5xx：换一次重试往往就能成功。"""
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    return status_code in {408, 425, 429} or status_code >= 500
+
+
 class MineruExtractor:
     """MinerU precision parsing API (v4 batch upload flow).
 
@@ -374,6 +382,8 @@ class MineruExtractor:
         timeout_seconds: float = 60.0,
         poll_interval_seconds: float = 5.0,
         poll_timeout_seconds: float = 600.0,
+        retry_attempts: int = 3,
+        retry_backoff_seconds: float = 3.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         # ``None`` means "read the environment"; "" explicitly disables the
@@ -386,6 +396,8 @@ class MineruExtractor:
         self._timeout = timeout_seconds
         self._poll_interval = poll_interval_seconds
         self._poll_timeout = poll_timeout_seconds
+        self._retry_attempts = max(1, retry_attempts)
+        self._retry_backoff = max(0.0, retry_backoff_seconds)
         self._transport = transport
 
     @property
@@ -399,6 +411,21 @@ class MineruExtractor:
     async def extract(self, pdf_path: Path) -> ExtractedDocument:
         if not self.available:
             raise FullTextParseError("MINERU_API_KEY is not configured")
+        attempts = self._retry_attempts
+        last: _TransientMineruError | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self._extract_once(pdf_path)
+            except _TransientMineruError as exc:
+                last = exc
+                if attempt >= attempts:
+                    break
+                # 批量解析失败的绝大多数是网络抖动或服务端 5xx，重试一次往往就成；
+                # 鉴权、额度、单篇不支持这类错误不会走到这里。
+                await asyncio.sleep(self._retry_backoff * attempt)
+        raise ProviderUnavailableError(f"MinerU 连续 {attempts} 次调用失败：{last}") from last
+
+    async def _extract_once(self, pdf_path: Path) -> ExtractedDocument:
         timeout = httpx.Timeout(self._timeout, connect=min(15.0, self._timeout))
         # 凭证仅发往 MinerU API，不能随预签名上传地址或结果 CDN 请求泄露。
         async with httpx.AsyncClient(timeout=timeout, transport=self._transport) as client:
@@ -429,22 +456,25 @@ class MineruExtractor:
                 headers={"Authorization": f"Bearer {self._api_key}"},
             )
         except httpx.HTTPError as exc:
-            raise ProviderUnavailableError(f"MinerU upload request failed: {exc}") from exc
+            raise _TransientMineruError(f"MinerU upload request failed: {exc}") from exc
         if response.status_code != 200:
-            raise ProviderUnavailableError(
-                f"MinerU returned HTTP {response.status_code} for upload request"
+            error_type = (
+                _TransientMineruError
+                if _is_retryable_status(response.status_code)
+                else ProviderUnavailableError
             )
+            raise error_type(f"MinerU returned HTTP {response.status_code} for upload request")
         try:
             body = response.json()
         except ValueError as exc:
-            raise ProviderUnavailableError(f"Malformed MinerU upload response: {exc}") from exc
+            raise _TransientMineruError(f"Malformed MinerU upload response: {exc}") from exc
         if body.get("code") not in (0, None):
             raise ProviderUnavailableError(f"MinerU rejected upload request: {body.get('msg')}")
         try:
             batch_id = str(body["data"]["batch_id"])
             upload_url = str(body["data"]["file_urls"][0])
         except (KeyError, IndexError, TypeError) as exc:
-            raise ProviderUnavailableError(f"Malformed MinerU upload response: {exc}") from exc
+            raise _TransientMineruError(f"Malformed MinerU upload response: {exc}") from exc
         return batch_id, upload_url
 
     async def _upload(self, client: httpx.AsyncClient, upload_url: str, pdf_path: Path) -> None:
@@ -453,11 +483,14 @@ class MineruExtractor:
             # MinerU requires no Content-Type header on the presigned PUT.
             response = await client.put(upload_url, content=content)
         except httpx.HTTPError as exc:
-            raise ProviderUnavailableError(f"MinerU file upload failed: {exc}") from exc
+            raise _TransientMineruError(f"MinerU file upload failed: {exc}") from exc
         if response.status_code != 200:
-            raise ProviderUnavailableError(
-                f"MinerU file upload returned HTTP {response.status_code}"
+            error_type = (
+                _TransientMineruError
+                if _is_retryable_status(response.status_code)
+                else ProviderUnavailableError
             )
+            raise error_type(f"MinerU file upload returned HTTP {response.status_code}")
 
     async def _poll_batch(self, client: httpx.AsyncClient, batch_id: str) -> str:
         deadline = asyncio.get_running_loop().time() + self._poll_timeout
@@ -468,15 +501,18 @@ class MineruExtractor:
                     headers={"Authorization": f"Bearer {self._api_key}"},
                 )
             except httpx.HTTPError as exc:
-                raise ProviderUnavailableError(f"MinerU polling failed: {exc}") from exc
+                raise _TransientMineruError(f"MinerU polling failed: {exc}") from exc
             if response.status_code != 200:
-                raise ProviderUnavailableError(
-                    f"MinerU polling returned HTTP {response.status_code}"
+                error_type = (
+                    _TransientMineruError
+                    if _is_retryable_status(response.status_code)
+                    else ProviderUnavailableError
                 )
+                raise error_type(f"MinerU polling returned HTTP {response.status_code}")
             try:
                 results = response.json()["data"]["extract_result"]
             except (ValueError, KeyError, TypeError) as exc:
-                raise ProviderUnavailableError(f"Malformed MinerU poll response: {exc}") from exc
+                raise _TransientMineruError(f"Malformed MinerU poll response: {exc}") from exc
             if isinstance(results, dict):
                 results = [results]
             for entry in results:
@@ -488,7 +524,7 @@ class MineruExtractor:
                         f"MinerU parsing failed: {entry.get('err_msg') or 'unknown error'}"
                     )
             if asyncio.get_running_loop().time() >= deadline:
-                raise ProviderUnavailableError(
+                raise _TransientMineruError(
                     f"MinerU polling timed out after {self._poll_timeout:.0f}s"
                 )
             await asyncio.sleep(self._poll_interval)
@@ -500,7 +536,7 @@ class MineruExtractor:
         try:
             async with client.stream("GET", zip_url, follow_redirects=True) as response:
                 if response.status_code != 200:
-                    raise ProviderUnavailableError(
+                    raise _TransientMineruError(
                         f"MinerU result download returned HTTP {response.status_code}"
                     )
                 async for chunk in response.aiter_bytes():
@@ -508,7 +544,7 @@ class MineruExtractor:
                     if len(content) > MAX_RESULT_ZIP_BYTES:
                         raise FullTextParseError("MinerU 结果压缩包超过大小上限。")
         except httpx.HTTPError as exc:
-            raise ProviderUnavailableError(f"MinerU result download failed: {exc}") from exc
+            raise _TransientMineruError(f"MinerU result download failed: {exc}") from exc
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as archive:
                 entries = archive.infolist()
@@ -543,7 +579,7 @@ class MineruExtractor:
                     text=text, markdown_ready=True, assets=assets, warnings=warnings
                 )
         except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
-            raise ProviderUnavailableError(f"MinerU result is not a valid zip: {exc}") from exc
+            raise _TransientMineruError(f"MinerU result is not a valid zip: {exc}") from exc
 
     async def _safe_page_count(self, pdf_path: Path) -> int | None:
         def count_pages() -> int | None:
