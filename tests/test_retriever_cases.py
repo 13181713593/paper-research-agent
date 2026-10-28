@@ -113,8 +113,10 @@ async def test_keyword_query_and_date_and_exclusion_are_encoded():
             excluded_terms=["vision"],
         )
     )
+    # arXiv 的 Boolean 接口会对每个 term 取 AND，多词语式极易把召回打到 0，
+    # 因此只保留首个短语；其余同义表达由规划器拆成独立查询后取并集。
     assert c.queries == [
-        '(all:neural AND all:retrieval) AND submittedDate:[202401010000 TO 202402012359] ANDNOT all:"vision"'
+        'all:neural AND submittedDate:[202401010000 TO 202402012359] ANDNOT all:"vision"'
     ]
 
 
@@ -193,9 +195,7 @@ async def test_real_sdk_path_429_retry_after_timeout_and_mapping(monkeypatch):
     assert papers[0].abstract == "Abstract."
     assert calls[1]["time"] - calls[0]["time"] >= 7
     assert all(c["timeout"][0] > 0 and c["timeout"][1] > 0 for c in calls)
-    assert parse_qs(urlsplit(calls[0]["url"]).query)["search_query"] == [
-        "(all:neural AND all:retrieval)"
-    ]
+    assert parse_qs(urlsplit(calls[0]["url"]).query)["search_query"] == ["all:neural"]
 
 
 @pytest.mark.asyncio
@@ -242,7 +242,7 @@ async def test_single_keyword_uses_standard_api_form_but_phrases_stay_quoted(mon
     await r.search(plan("electron"))
     await r.search(plan('"neural retrieval" ranking'))
     queries = [parse_qs(urlsplit(call["url"]).query)["search_query"][0] for call in calls]
-    assert queries == ["all:electron", '(all:"neural retrieval" AND all:ranking)']
+    assert queries == ["all:electron", 'all:"neural retrieval"']
 
 
 @pytest.mark.asyncio

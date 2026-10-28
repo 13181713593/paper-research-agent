@@ -16,6 +16,7 @@ from paper_agent.adapters.crossref_retriever import CrossrefRetriever
 from paper_agent.adapters.europepmc_retriever import EuropePmcRetriever
 from paper_agent.adapters.llm_concept_extractor import LLMConceptExtractor
 from paper_agent.adapters.openalex_retriever import OpenAlexRetriever
+from paper_agent.adapters.openreview_retriever import OpenReviewRetriever
 from paper_agent.adapters.paper_merger import PaperMerger
 from paper_agent.adapters.query_planner import HeuristicQueryPlanner
 from paper_agent.adapters.semantic_scholar_retriever import SemanticScholarRetriever
@@ -25,7 +26,7 @@ from paper_agent.config import Settings, load_local_env
 
 
 def build_retrieval_dependencies(settings: Settings | None = None) -> PipelineDependencies:
-    """第一组五源检索与去重；其他阶段保留演示组件供单组联调。"""
+    """第一组六源检索与去重；其他阶段保留演示组件供单组联调。"""
     settings = settings or Settings.from_env()
     extractor = LLMConceptExtractor(
         base_url=settings.llm_base_url,
@@ -41,6 +42,7 @@ def build_retrieval_dependencies(settings: Settings | None = None) -> PipelineDe
             OpenAlexRetriever(),
             SemanticScholarRetriever(),
             EuropePmcRetriever(),
+            OpenReviewRetriever(),
         ],
         merger=PaperMerger(),
     )

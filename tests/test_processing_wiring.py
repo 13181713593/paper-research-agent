@@ -23,6 +23,7 @@ from paper_agent.adapters.llm_report_writer import INFERENCE_LABEL, LlmReportWri
 from paper_agent.adapters.llm_summarizer import LlmSummarizer
 from paper_agent.adapters.markdown_parser import PypdfExtractor
 from paper_agent.adapters.openalex_retriever import OpenAlexRetriever
+from paper_agent.adapters.openreview_retriever import OpenReviewRetriever
 from paper_agent.adapters.paper_merger import PaperMerger
 from paper_agent.adapters.query_planner import HeuristicQueryPlanner
 from paper_agent.adapters.semantic_scholar_retriever import SemanticScholarRetriever
@@ -129,6 +130,7 @@ REAL_RETRIEVERS = {
     OpenAlexRetriever,
     SemanticScholarRetriever,
     EuropePmcRetriever,
+    OpenReviewRetriever,
 }
 
 
@@ -138,7 +140,7 @@ def test_all_modes_preserve_independent_wiring(mode, tmp_path):
     expected = build_demo_dependencies()
     if mode in {"retrieval", "production"}:
         assert {type(r) for r in deps.retrievers} == REAL_RETRIEVERS
-        assert len(deps.retrievers) == 5
+        assert len(deps.retrievers) == 6
         assert isinstance(deps.query_planner, HeuristicQueryPlanner)
         assert isinstance(deps.merger, PaperMerger)
     else:

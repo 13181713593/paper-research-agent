@@ -96,7 +96,9 @@ def test_query_table_distinguishes_empty_matches_and_actual_request_errors():
     assert query_result_row(normal_empty)["状态"] == "未匹配"
     assert query_result_row(historical_empty)["状态"] == "未匹配"
     assert query_result_row(timed_out)["状态"] == "请求失败"
-    assert query_result_row(timed_out)["说明"] == timed_out["error"]
+    # 失败原因统一换成可读说明，不回放原始异常与 URL。
+    assert "未在等待时间内" in query_result_row(timed_out)["说明"]
+    assert "arXiv request timed out" not in query_result_row(timed_out)["说明"]
 
 
 def test_page_displays_all_stage_results_and_retains_them_on_rerun(monkeypatch):

@@ -13,6 +13,20 @@ from dataclasses import dataclass, field
 
 # Chinese -> English academic terms. Longest match wins ("数学推理" beats "推理").
 _ZH_EN_TERMS: dict[str, str] = {
+    "大模型智能体": "large language model agents",
+    "大语言模型智能体": "large language model agents",
+    "大模型": "large language model",
+    "无人机导航": "unmanned aerial vehicle navigation",
+    "智能控制": "intelligent control",
+    "云边协同": "cloud edge computing",
+    "云边协作": "cloud edge computing",
+    "边缘计算": "edge computing",
+    "云计算": "cloud computing",
+    "任务卸载": "task offloading",
+    "计算卸载": "computation offloading",
+    "计算资源调度": "computational resource scheduling",
+    "资源调度": "resource scheduling",
+    "资源分配": "resource allocation",
     "场景文本检测": "scene text detection",
     "场景文本识别": "scene text recognition",
     "场景文本": "scene text",
@@ -66,6 +80,10 @@ _ZH_EN_TERMS: dict[str, str] = {
 }
 
 _SYNONYM_GROUPS: list[list[str]] = [
+    ["large language model agents", "LLM agents", "language agents"],
+    ["unmanned aerial vehicle navigation", "UAV navigation", "drone navigation"],
+    ["cloud edge computing", "cloud edge collaboration", "edge cloud computing"],
+    ["task offloading", "computation offloading", "computational offloading"],
     [
         "scene text",
         "scene text detection",
@@ -89,6 +107,13 @@ _SYNONYM_GROUPS: list[list[str]] = [
 ]
 
 _STOPWORDS = {
+    "please",
+    "investigate",
+    "compare",
+    "different",
+    "across",
+    "strategies",
+    "environment",
     "the",
     "a",
     "an",
@@ -124,7 +149,7 @@ _STOPWORDS = {
     "什么",
 }
 
-_TOKEN_RE = re.compile(r"[a-zA-Z]{2,}")
+_TOKEN_RE = re.compile(r"\b[56]G\b|[a-zA-Z]{2,}", re.IGNORECASE)
 
 
 @dataclass
@@ -157,13 +182,20 @@ class HeuristicConceptExtractor:
         concepts: list[str] = []
 
         spans: list[tuple[int, int, str]] = []
+        known_phrases = set(_ZH_EN_TERMS.values()) | {s for group in _SYNONYM_GROUPS for s in group}
+        for phrase in known_phrases if len(text.split()) > 10 else ():
+            if len(phrase.split()) < 2:
+                continue
+            expression = r"(?<!\w)" + re.escape(phrase).replace(r"\ ", r"[-\s]+") + r"(?!\w)"
+            for match in re.finditer(expression, text, re.IGNORECASE):
+                spans.append((match.start(), match.end(), phrase))
         for zh, en in _ZH_EN_TERMS.items():
             start = 0
             while (idx := text.find(zh, start)) != -1:
                 spans.append((idx, idx + len(zh), en))
                 start = idx + len(zh)
         # Longest matches first; skip spans overlapped by a strictly longer one.
-        for start, end, en in sorted(spans, key=lambda s: s[1] - s[0], reverse=True):
+        for start, end, en in sorted(spans, key=lambda s: (-(s[1] - s[0]), s[0], s[2])):
             if en in concepts:
                 continue
             overlapped = any(

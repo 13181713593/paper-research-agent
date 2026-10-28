@@ -11,6 +11,7 @@ import streamlit as st
 
 from paper_agent.application.progress import redact_audit_value
 from paper_agent.domain.models import PipelineStage, ProcessingStatus, StageEvent
+from paper_agent.domain.provider_messages import SOURCE_LABELS, display_message
 from paper_agent.ui import stage_panels
 
 STAGE_LABELS = {
@@ -47,13 +48,6 @@ CHANNEL_LABELS = {
     "openalex": "OpenAlex",
     "landing_page": "落地页",
     "resolve": "学术库",
-}
-SOURCE_LABELS = {
-    "arxiv": "arXiv",
-    "crossref": "Crossref",
-    "openalex": "OpenAlex",
-    "semantic_scholar": "Semantic Scholar",
-    "europe_pmc": "Europe PMC",
 }
 STATUS_LABELS = {
     ProcessingStatus.RUNNING: "⏳ 处理中",
@@ -142,7 +136,7 @@ def query_result_row(query):
         if empty
         else {"succeeded": "查询成功", "failed": "请求失败"}.get(query["status"], query["status"]),
         "返回数量": query["count"],
-        "说明": "查询已返回，未找到匹配文献" if empty else query.get("error"),
+        "说明": "查询已返回，未找到匹配文献" if empty else display_message(query.get("error")),
     }
 
 

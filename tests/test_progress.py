@@ -172,7 +172,8 @@ async def test_failed_and_empty_sources_have_distinct_results():
     source_events = {e.source_name: e for e in result.progress_events if e.scope == "source"}
     assert source_events["arxiv"].status == ProcessingStatus.FAILED
     assert source_events["arxiv"].error_code == "TimeoutError"
-    assert source_events["arxiv"].message == "provider timed out"
+    # 进度条展示的是“已观察到的状态”，不直接回放异常原文。
+    assert "未在等待时间内" in source_events["arxiv"].message
     assert source_events["openalex"].status == ProcessingStatus.SUCCEEDED
     assert source_events["openalex"].output_count == 0
     assert result.progress_events[-1].stage == PipelineStage.RETRIEVED

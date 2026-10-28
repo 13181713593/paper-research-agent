@@ -101,9 +101,9 @@ with st.sidebar:
     else:
         mode_descriptions = {
             "demo": "demo：全部使用离线演示组件，不执行真实检索或全文下载。",
-            "retrieval": "retrieval：五源真实检索与去重；排序、全文处理、总结和报告仍为演示组件。",
+            "retrieval": "retrieval：六源真实检索与去重；排序、全文处理、总结和报告仍为演示组件。",
             "ranking": "ranking：第二组真实预排序、证据确认和重排；检索、全文处理和总结仍为演示组件。",
-            "production": "production：五源真实检索 → 去重 → 第二组排序 → 第三组全文处理与总结报告。",
+            "production": "production：六源真实检索 → 去重 → 第二组排序 → 第三组全文处理与总结报告。",
         }
         st.info(mode_descriptions.get(settings.app_env, f"未知模式：{settings.app_env}"))
         if settings.app_env in {"retrieval", "production"}:

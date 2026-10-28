@@ -178,7 +178,13 @@ class OpenAlexRetriever:
             abstract=abstract,
             doi=doi,
             openalex_id=openalex_id,
-            venue=Venue(name=venue_name) if venue_name else None,
+            venue=Venue(
+                name=venue_name,
+                venue_type=source_info.get("type"),
+                publisher=source_info.get("host_organization_name"),
+            )
+            if venue_name
+            else None,
             citation_count=item.get("cited_by_count"),
             is_open_access=oa.get("is_oa"),
             open_access_url=(oa.get("oa_url") or None),
@@ -189,7 +195,10 @@ class OpenAlexRetriever:
                 SourceRecord(
                     source=PaperSource.OPENALEX,
                     source_id=openalex_id or doi or title,
-                    raw_metadata={"openalex_type": (item.get("type") or "")},
+                    raw_metadata={
+                        "openalex_type": (item.get("type") or ""),
+                        "citation_count": item.get("cited_by_count"),
+                    },
                 )
             ],
         )

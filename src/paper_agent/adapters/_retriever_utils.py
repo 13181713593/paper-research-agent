@@ -12,13 +12,18 @@ Conventions from docs/API_CONTRACTS.md:
 
 from __future__ import annotations
 
+import math
+import random
+import threading
 import time
 from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests
+
+from paper_agent.domain.request_budget import remaining_time, wait_with_budget
 
 
 class ProviderError(Exception):
@@ -41,31 +46,69 @@ class ProviderResponseError(ProviderError):
     """The provider answered but the payload could not be trusted."""
 
 
-_RETRY_AFTER_CAP_SECONDS = 120.0
+_HOST_LOCK = threading.Lock()
+_HOST_COOLDOWNS: dict[str, float] = {}
+_HOST_NEXT: dict[str, float] = {}
+_HOST_FAILURES: dict[str, ProviderError] = {}
 
 
 def _retry_after(response: Any, fallback: float) -> float:
     """Respect the provider's Retry-After header (seconds or HTTP-date).
 
     Falls back to the caller's exponential backoff when absent/unparsable and
-    caps the wait so one stubborn provider cannot stall the whole pipeline.
+    never shortens the server's delay. The caller stops if its budget is shorter.
     """
     headers = getattr(response, "headers", None) or {}
     getter = getattr(headers, "get", None)
     if getter is None:
         return fallback
     value = getter("Retry-After")
-    if not value:
+    if not isinstance(value, (str, int, float)) or not value:
         return fallback
     try:
         seconds = float(value)
     except (TypeError, ValueError):
         try:
             when = parsedate_to_datetime(str(value))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return fallback
-        seconds = (when - datetime.now(UTC)).total_seconds()
-    return max(0.0, min(seconds, _RETRY_AFTER_CAP_SECONDS))
+        if when.tzinfo is None:
+            return fallback
+        reference = datetime.now(UTC)
+        try:
+            server_date = parsedate_to_datetime(str(getter("Date") or ""))
+            if server_date.tzinfo is not None:
+                reference = server_date
+        except (ValueError, TypeError, OverflowError):
+            pass
+        seconds = (when - reference).total_seconds()
+    return max(0.0, seconds) if math.isfinite(seconds) and seconds >= 0 else fallback
+
+
+def _host_gate(host, deadline):
+    """Reserve a request slot and share cooldowns across simultaneous app sessions."""
+    # Public services only; injected unit-test endpoints have no pacing policy.
+    interval = (
+        1.0
+        if host
+        in {"api.crossref.org", "api.openalex.org", "api.semanticscholar.org", "www.ebi.ac.uk"}
+        else 0.0
+    )
+    while True:
+        with _HOST_LOCK:
+            now = time.monotonic()
+            cooldown = _HOST_COOLDOWNS.get(host, 0)
+            if cooldown >= deadline:
+                raise _HOST_FAILURES.get(
+                    host, ProviderRateLimitedError("Provider cooldown exceeds request budget")
+                )
+            wait = max(cooldown, _HOST_NEXT.get(host, 0)) - now
+            if wait <= 0:
+                _HOST_NEXT[host] = now + interval
+                return
+        if wait >= deadline - time.monotonic():
+            raise ProviderTimeoutError("Request pacing exceeds time budget")
+        wait_with_budget(wait)
 
 
 def http_get_json(
@@ -74,9 +117,10 @@ def http_get_json(
     params: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 20.0,
-    max_retries: int = 3,
+    max_retries: int = 2,
     initial_backoff: float = 0.5,
-    max_retry_after: float = 120.0,
+    max_retry_after: float = 15.0,
+    total_timeout: float = 25.0,
 ) -> Any:
     """Blocking GET returning parsed JSON with retry/backoff.
 
@@ -85,46 +129,57 @@ def http_get_json(
     persists after all retries raises ``ProviderRateLimitedError``; connection
     problems raise ``ProviderUnavailableError``.
     """
-    backoff = initial_backoff
+    deadline = time.monotonic() + remaining_time(total_timeout)
+    host = urlsplit(url).netloc
     for attempt in range(max_retries + 1):
+        _host_gate(host, deadline)
+        remaining = remaining_time(deadline - time.monotonic())
+        if remaining <= 0:
+            raise ProviderTimeoutError("Request time budget exhausted")
+        response = None
+        failure = None
+        backoff = random.uniform(0, min(8.0, initial_backoff * 2**attempt))
         try:
-            response = requests.get(url, params=params, headers=headers, timeout=timeout)
+            response = requests.get(
+                url, params=params, headers=headers, timeout=min(timeout, remaining)
+            )
         except requests.Timeout as exc:
-            raise ProviderTimeoutError(f"{url} timed out after {timeout}s") from exc
+            failure = ProviderTimeoutError("Provider request timed out")
+            failure.__cause__ = exc
         except requests.RequestException as exc:
-            if attempt < max_retries:
-                time.sleep(backoff)
-                backoff *= 2
-                continue
-            raise ProviderUnavailableError(f"{url} unreachable: {exc}") from exc
-
-        if response.status_code == 200:
+            failure = ProviderUnavailableError("Provider connection unavailable")
+            failure.__cause__ = exc
+        if response is not None:
             try:
-                return response.json()
-            except ValueError as exc:
-                raise ProviderResponseError(f"{url} returned invalid JSON") from exc
-
-        if response.status_code == 429:
-            if attempt < max_retries:
-                time.sleep(min(max_retry_after, _retry_after(response, fallback=backoff)))
-                backoff *= 2
-                continue
-            raise ProviderRateLimitedError(f"{url} rate limited after {max_retries} retries")
-
-        if 500 <= response.status_code < 600:
-            if attempt < max_retries:
-                time.sleep(backoff)
-                backoff *= 2
-                continue
-            raise ProviderUnavailableError(f"{url} server error {response.status_code}")
-
-        # 4xx other than 429: not retryable, fail loudly. A 404 on these
-        # search endpoints means the URL/path is wrong or a proxy intercepted
-        # the request — silently returning "no results" would hide the real
-        # failure from the pipeline's per-source warnings.
-        raise ProviderResponseError(
-            f"{url} returned HTTP {response.status_code}: {response.text[:200]}"
-        )
+                if response.status_code == 200:
+                    try:
+                        return response.json()
+                    except ValueError as exc:
+                        raise ProviderResponseError("Provider returned invalid JSON") from exc
+                if response.status_code == 429:
+                    failure = ProviderRateLimitedError("Provider rate limited")
+                    backoff = _retry_after(response, fallback=max(2.0, backoff))
+                elif 500 <= response.status_code < 600:
+                    failure = ProviderUnavailableError(
+                        f"Provider server error {response.status_code}"
+                    )
+                    backoff = _retry_after(response, fallback=backoff)
+                else:
+                    raise ProviderResponseError(f"Provider returned HTTP {response.status_code}")
+                with _HOST_LOCK:
+                    _HOST_COOLDOWNS[host] = max(
+                        _HOST_COOLDOWNS.get(host, 0), time.monotonic() + backoff
+                    )
+                    _HOST_FAILURES[host] = failure
+            finally:
+                response.close()
+        if (
+            attempt >= max_retries
+            or backoff > max_retry_after
+            or backoff >= remaining_time(deadline - time.monotonic())
+        ):
+            raise failure
+        wait_with_budget(backoff)
 
 
 def parse_date(value: str | None) -> date | None:

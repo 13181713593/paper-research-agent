@@ -296,7 +296,7 @@ def test_ui_generates_three_download_types_without_regeneration(ui, result):
         ("demo", "全部使用离线演示组件"),
         ("retrieval", "排序、全文处理、总结和报告仍为演示组件"),
         ("ranking", "检索、全文处理和总结仍为演示组件"),
-        ("production", "五源真实检索 → 去重 → 第二组排序 → 第三组全文处理"),
+        ("production", "六源真实检索 → 去重 → 第二组排序 → 第三组全文处理"),
     ],
 )
 def test_ui_describes_actual_mode(ui, monkeypatch, mode, description):
@@ -316,7 +316,7 @@ def test_ui_loads_dotenv_before_display_settings(ui, monkeypatch, tmp_path):
     (tmp_path / ".env").write_text("PAPER_AGENT_ENV=retrieval\n", "utf-8")
     app.run()
     assert not app.exception
-    assert any("retrieval：五源真实检索" in item.value for item in app.sidebar.info)
+    assert any("retrieval：六源真实检索" in item.value for item in app.sidebar.info)
 
 
 def test_ui_missing_fulltext_keeps_summary_and_report_downloads(ui, result):

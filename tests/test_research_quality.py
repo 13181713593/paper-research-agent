@@ -37,6 +37,7 @@ async def test_chinese_topic_has_bilingual_queries_and_provider_specific_strateg
         PaperSource.CROSSREF,
         PaperSource.SEMANTIC_SCHOLAR,
         PaperSource.EUROPE_PMC,
+        PaperSource.OPENREVIEW,
     ):
         queries = [q for q in plan.queries if q.source == source]
         assert {q.language for q in queries} == {"en", "zh"}

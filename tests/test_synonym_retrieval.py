@@ -10,7 +10,7 @@ from paper_agent.adapters.openalex_retriever import OpenAlexRetriever
 from paper_agent.adapters.query_expansion import search_variants
 from paper_agent.adapters.query_planner import HeuristicQueryPlanner
 from paper_agent.adapters.semantic_scholar_retriever import SemanticScholarRetriever
-from paper_agent.domain.models import ResearchIdea
+from paper_agent.domain.models import PaperSource, ResearchIdea
 
 
 @pytest.mark.asyncio
@@ -25,15 +25,20 @@ async def test_late_synonyms_are_used_and_ambiguous_ocr_is_qualified():
     plan = await HeuristicQueryPlanner(Extractor(), expand_queries=True).plan(
         ResearchIdea(text="场景文本检测与识别"), 30
     )
-    assert "text spotting" in plan.query_terms
-    assert "end-to-end text spotting" in plan.query_terms
     assert "optical character recognition in natural scenes" in plan.query_terms
+    assert len([t for t in plan.query_terms if t.isascii()]) <= 3
+    assert "未单独请求" in plan.term_notes["E2E text spotting"]
     assert "OCR" not in plan.query_terms and "scene text" not in plan.query_terms
     assert len(plan.query_terms) <= 7
     assert plan.source_limit == 30
+    boolean_sources = {PaperSource.ARXIV, PaperSource.EUROPE_PMC}
     for source in {q.source for q in plan.queries}:
         queries = [q for q in plan.queries if q.source == source]
-        for term in plan.query_terms:
+        # 布尔来源（arXiv / Europe PMC）每条查询只能是一个短语，否则 AND 会把召回打到 0，
+        # 因此只覆盖核心概念；其余来源逐条请求同义表达，保证每个别名都真正发出。
+        terms = plan.concepts if source in boolean_sources else plan.query_terms
+        assert terms
+        for term in terms:
             assert any(term in q.query for q in queries)
         assert all(q.filters.get("date_from") and q.filters.get("date_to") for q in queries)
         assert len(queries) <= 14
@@ -95,7 +100,7 @@ async def test_every_planned_alias_reaches_http_parameters(
     )
     for query in [q for q in plan.queries if q.source == source]:
         await adapter().search(plan.model_copy(update={"queries": [query]}))
-    for term in plan.query_terms:
+    for term in plan.concepts if source in ("arxiv", "europe_pmc") else plan.query_terms:
         assert any(term in params[param] for params in calls)
     if source == "europe_pmc":
         assert all("TITLE_ABS:" in params[param] for params in calls)
@@ -120,7 +125,7 @@ async def test_arxiv_synonyms_are_separate_queries_with_all_constraints():
     retriever = ArxivRetriever(client=Client(), config=ArxivSearchConfig(delay_seconds=0))
     for query in [q for q in plan.queries if q.source == "arxiv"]:
         await retriever.search(plan.model_copy(update={"queries": [query]}))
-    for term in plan.query_terms:
+    for term in plan.concepts:
         expected = f'all:"{term}"' if " " in term else f"all:{term}"
         assert any(expected in expression for expression in calls)
     assert all('AND all:"transformer"' in expression for expression in calls)
