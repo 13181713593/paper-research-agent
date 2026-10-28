@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.8", "mypy>=1.13"]
 ranking = ["sentence-transformers>=5,<6"]
-processing = ["pypdf>=4,<8", "fonttools>=4,<5"]
+processing = ["pypdf>=4,<8"]
 
 [project.scripts]
 paper-agent-mcp = "paper_agent.mcp_server:main"

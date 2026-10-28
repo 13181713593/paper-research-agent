@@ -14,6 +14,7 @@ __pycache__/
 *.p12
 *.pfx
 data/
+artifacts/
 *.log
 pytest-cache-files-*/
 .DS_Store
