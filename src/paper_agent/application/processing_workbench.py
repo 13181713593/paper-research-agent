@@ -25,6 +25,9 @@ from paper_agent.domain.models import (
     StageEvent,
 )
 
+MAX_BATCH_PAPERS = 100
+MAX_WORKBENCH_CONCURRENCY = 8
+
 EXAMPLE_TITLES = {
     "1706.03762": "Attention Is All You Need",
     "1409.0473": "Neural Machine Translation by Jointly Learning to Align and Translate",
@@ -34,8 +37,8 @@ EXAMPLE_TITLES = {
 def papers_from_arxiv_ids(value: str) -> list[Paper]:
     """仅接受公开 arXiv 标识，不把用户输入作为任意下载地址。"""
     ids = list(dict.fromkeys(part for part in re.split(r"[\s,，;；]+", value.strip()) if part))
-    if not 1 <= len(ids) <= 20:
-        raise ValueError("请填写 1 至 20 个 arXiv 编号，每行一个。")
+    if not 1 <= len(ids) <= MAX_BATCH_PAPERS:
+        raise ValueError(f"请填写 1 至 {MAX_BATCH_PAPERS} 个 arXiv 编号，每行一个。")
     if any(not ARXIV_ID.fullmatch(identifier) for identifier in ids):
         raise ValueError("编号格式不正确，例如 1706.03762；请不要填写网址。")
     return [
@@ -87,10 +90,10 @@ class ProcessingWorkbench:
         concurrency: int = 4,
         progress: Callable[[str], None] | None = None,
     ) -> ProcessingRun:
-        if not 1 <= len(papers) <= 20:
-            raise ValueError("每批需提供 1 至 20 篇论文。")
-        if not 1 <= concurrency <= 8:
-            raise ValueError("并发数必须在 1 至 8 之间。")
+        if not 1 <= len(papers) <= MAX_BATCH_PAPERS:
+            raise ValueError(f"每批需提供 1 至 {MAX_BATCH_PAPERS} 篇论文。")
+        if not 1 <= concurrency <= MAX_WORKBENCH_CONCURRENCY:
+            raise ValueError(f"并发数必须在 1 至 {MAX_WORKBENCH_CONCURRENCY} 之间。")
         if len({paper.paper_id for paper in papers}) != len(papers):
             raise ValueError("论文 ID 不能重复。")
         started = perf_counter()

@@ -58,7 +58,7 @@ class Settings:
     def from_env(cls) -> Settings:
         return cls(
             app_env=os.getenv("PAPER_AGENT_ENV", "demo"),
-            max_concurrency=max(1, int(os.getenv("PAPER_AGENT_MAX_CONCURRENCY", "4"))),
+            max_concurrency=min(32, max(1, int(os.getenv("PAPER_AGENT_MAX_CONCURRENCY", "4")))),
             request_timeout_seconds=max(
                 1.0, float(os.getenv("PAPER_AGENT_REQUEST_TIMEOUT_SECONDS", "30"))
             ),

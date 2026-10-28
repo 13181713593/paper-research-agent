@@ -3,6 +3,7 @@
 Save actual responses, map real records to the shared Paper, and check A's merger.
 No API keys, fixture fallback, PDF download, or bootstrap changes are used.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -49,31 +50,50 @@ def restore_abstract(index):
 
 def openalex_paper(record):
     """Diagnostic JSON mapping; preserve the provider payload without inventing BibTeX."""
-    authors = [Author(
-        name=item["author"]["display_name"],
-        orcid=item["author"].get("orcid"),
-        affiliations=[institution["display_name"]
-                      for institution in item.get("institutions", [])
-                      if institution.get("display_name")],
-    ) for item in record.get("authorships", [])]
+    authors = [
+        Author(
+            name=item["author"]["display_name"],
+            orcid=item["author"].get("orcid"),
+            affiliations=[
+                institution["display_name"]
+                for institution in item.get("institutions", [])
+                if institution.get("display_name")
+            ],
+        )
+        for item in record.get("authorships", [])
+    ]
     location = record.get("primary_location") or {}
     oa_location = record.get("best_oa_location") or {}
     oa = record.get("open_access") or {}
     landing = location.get("landing_page_url") or record["id"]
     return Paper(
         paper_id=uuid5(NAMESPACE_URL, f"paper-agent:openalex:{record['id']}"),
-        title=record["display_name"], normalized_title=normalize_title(record["display_name"]),
+        title=record["display_name"],
+        normalized_title=normalize_title(record["display_name"]),
         authors=authors,
-        institutions=list(dict.fromkeys(name for author in authors for name in author.affiliations)),
-        year=record.get("publication_year"), publication_date=record.get("publication_date"),
-        doi=normalize_doi(record.get("doi")), openalex_id=record["id"],
+        institutions=list(
+            dict.fromkeys(name for author in authors for name in author.affiliations)
+        ),
+        year=record.get("publication_year"),
+        publication_date=record.get("publication_date"),
+        doi=normalize_doi(record.get("doi")),
+        openalex_id=record["id"],
         abstract=restore_abstract(record.get("abstract_inverted_index")),
-        language=record.get("language"), citation_count=record.get("cited_by_count"),
-        is_open_access=oa.get("is_oa"), is_retracted=record.get("is_retracted"),
-        landing_page_url=landing, open_access_url=oa.get("oa_url"),
+        language=record.get("language"),
+        citation_count=record.get("cited_by_count"),
+        is_open_access=oa.get("is_oa"),
+        is_retracted=record.get("is_retracted"),
+        landing_page_url=landing,
+        open_access_url=oa.get("oa_url"),
         fulltext=FullTextAsset(pdf_url=oa_location.get("pdf_url"), landing_page_url=landing),
-        source_records=[SourceRecord(source=PaperSource.OPENALEX, source_id=record["id"],
-                                     source_url=record["id"], raw_metadata=record)],
+        source_records=[
+            SourceRecord(
+                source=PaperSource.OPENALEX,
+                source_id=record["id"],
+                source_url=record["id"],
+                raw_metadata=record,
+            )
+        ],
     )
 
 
@@ -81,13 +101,22 @@ def semantic_scholar_paper(record):
     external = record.get("externalIds") or {}
     return Paper(
         paper_id=uuid5(NAMESPACE_URL, f"paper-agent:semantic_scholar:{record['paperId']}"),
-        title=record["title"], authors=[Author(name=a["name"]) for a in record.get("authors", [])],
-        year=record.get("year"), abstract=record.get("abstract"),
-        doi=normalize_doi(external.get("DOI")), arxiv_id=external.get("ArXiv"),
-        semantic_scholar_id=record["paperId"], landing_page_url=record.get("url"),
-        source_records=[SourceRecord(source=PaperSource.SEMANTIC_SCHOLAR,
-                                     source_id=record["paperId"], source_url=record.get("url"),
-                                     raw_metadata=record)],
+        title=record["title"],
+        authors=[Author(name=a["name"]) for a in record.get("authors", [])],
+        year=record.get("year"),
+        abstract=record.get("abstract"),
+        doi=normalize_doi(external.get("DOI")),
+        arxiv_id=external.get("ArXiv"),
+        semantic_scholar_id=record["paperId"],
+        landing_page_url=record.get("url"),
+        source_records=[
+            SourceRecord(
+                source=PaperSource.SEMANTIC_SCHOLAR,
+                source_id=record["paperId"],
+                source_url=record.get("url"),
+                raw_metadata=record,
+            )
+        ],
     )
 
 
@@ -96,7 +125,9 @@ class LiveEvidence:
         self.destination = destination
         self.sequence = 0
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "paper-research-agent/0.2 (academic course project)"})
+        self.session.headers.update(
+            {"User-Agent": "paper-research-agent/0.2 (academic course project)"}
+        )
 
     def get(self, case, url, *, params=None, bibtex=False):
         self.sequence += 1
@@ -104,30 +135,54 @@ class LiveEvidence:
         exchange = {"at": datetime.now(UTC).isoformat(), "requested_url": url, "params": params}
         case.setdefault("http", []).append(exchange)
         try:
-            response = self.session.get(url, params=params, timeout=(10, 25), headers={
-                "Accept": "application/x-bibtex" if bibtex else "application/json",
-            })
+            response = self.session.get(
+                url,
+                params=params,
+                timeout=(10, 25),
+                headers={
+                    "Accept": "application/x-bibtex" if bibtex else "application/json",
+                },
+            )
         except requests.RequestException as exc:
             exchange.update(error_type=type(exc).__name__, error=str(exc))
             raise
         body = response.content
         (self.destination / filename).write_bytes(body)
-        exchange.update(url=response.url, status=response.status_code, body_file=filename,
-                        bytes=len(body), sha256=hashlib.sha256(body).hexdigest(), headers={
-                            key: value for key, value in response.headers.items()
-                            if key.lower() in {"content-type", "date", "retry-after",
-                                               "x-ratelimit-limit", "x-ratelimit-remaining"}
-                        })
+        exchange.update(
+            url=response.url,
+            status=response.status_code,
+            body_file=filename,
+            bytes=len(body),
+            sha256=hashlib.sha256(body).hexdigest(),
+            headers={
+                key: value
+                for key, value in response.headers.items()
+                if key.lower()
+                in {
+                    "content-type",
+                    "date",
+                    "retry-after",
+                    "x-ratelimit-limit",
+                    "x-ratelimit-remaining",
+                }
+            },
+        )
         response.raise_for_status()
         # Crossref transform may omit Content-Type; its payload is UTF-8.
         return body.decode("utf-8-sig") if bibtex else response.json()
 
     async def crossref_paper(self, case, record):
         doi = record["DOI"]
-        url = f"https://api.crossref.org/works/{quote(doi, safe='/')}/transform/application/x-bibtex"
+        url = (
+            f"https://api.crossref.org/works/{quote(doi, safe='/')}/transform/application/x-bibtex"
+        )
         bibtex = self.get(case, url, bibtex=True)
-        supplemental = {"doi": doi, "source_id": doi, "source_url": record.get("URL"),
-                        "raw_metadata": record}
+        supplemental = {
+            "doi": doi,
+            "source_id": doi,
+            "source_url": record.get("URL"),
+            "raw_metadata": record,
+        }
         # Some real transform responses omit even the title; use the same DOI's JSON.
         if record.get("title"):
             supplemental["title"] = record["title"][0]
@@ -136,11 +191,15 @@ class LiveEvidence:
             parser.feed(record["abstract"])
             supplemental["abstract"] = " ".join(" ".join(parser.parts).split()) or None
         if record.get("author"):
-            supplemental["authors"] = [{
-                "name": a.get("name") or " ".join(filter(None, [a.get("given"), a.get("family")])),
-                "orcid": a.get("ORCID"),
-                "affiliations": [i["name"] for i in a.get("affiliation", []) if i.get("name")],
-            } for a in record["author"]]
+            supplemental["authors"] = [
+                {
+                    "name": a.get("name")
+                    or " ".join(filter(None, [a.get("given"), a.get("family")])),
+                    "orcid": a.get("ORCID"),
+                    "affiliations": [i["name"] for i in a.get("affiliation", []) if i.get("name")],
+                }
+                for a in record["author"]
+            ]
         for field in ("published", "issued"):
             parts = (record.get(field) or {}).get("date-parts") or []
             if parts and parts[0]:
@@ -149,8 +208,9 @@ class LiveEvidence:
                     year, month, day = parts[0]
                     supplemental["publication_date"] = f"{year:04d}-{month:02d}-{day:02d}"
                 break
-        paper = await BibTexMapper().to_paper(bibtex, source="crossref",
-                                              supplemental_metadata=supplemental)
+        paper = await BibTexMapper().to_paper(
+            bibtex, source="crossref", supplemental_metadata=supplemental
+        )
         if paper.doi != normalize_doi(doi) or not paper.bibtex:
             raise ValueError("BibTeX mapping lost the DOI or original BibTeX")
         return paper
@@ -168,9 +228,14 @@ async def check_papers(case, papers):
     repeated = await merger.merge_and_deduplicate(papers + papers)
     if [p.model_dump() for p in repeated] != [p.model_dump() for p in unique]:
         raise ValueError("Repeating real records changed the deduplicated result")
-    case.update(papers=[p.model_dump(mode="json") for p in papers], count=len(papers),
-                abstract_count=sum(bool(p.abstract) for p in papers),
-                deduplicated_count=len(unique), json_roundtrip="passed", repeat_merge="passed")
+    case.update(
+        papers=[p.model_dump(mode="json") for p in papers],
+        count=len(papers),
+        abstract_count=sum(bool(p.abstract) for p in papers),
+        deduplicated_count=len(unique),
+        json_roundtrip="passed",
+        repeat_merge="passed",
+    )
 
 
 def record_failure(case, exc):
@@ -179,13 +244,20 @@ def record_failure(case, exc):
 
 
 async def verify(args):
-    destination = (Path(__file__).resolve().parents[1] / "artifacts" / "multisource_live"
-                   / datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ"))
+    destination = (
+        Path(__file__).resolve().parents[1]
+        / "artifacts"
+        / "multisource_live"
+        / datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    )
     destination.mkdir(parents=True)
-    report = {"started_at": datetime.now(UTC).isoformat(),
-              "mode": "live_network_no_fixtures", "authentication": "no_api_keys",
-              "scope": "API and shared model diagnostics; production B adapters are not wired",
-              "cases": []}
+    report = {
+        "started_at": datetime.now(UTC).isoformat(),
+        "mode": "live_network_no_fixtures",
+        "authentication": "no_api_keys",
+        "scope": "API and shared model diagnostics; production B adapters are not wired",
+        "cases": [],
+    }
     client = LiveEvidence(destination)
     openalex_candidates = []
     try:
@@ -195,17 +267,29 @@ async def verify(args):
                 report["cases"].append(case)
                 try:
                     if source == "crossref":
-                        payload = client.get(case, "https://api.crossref.org/works",
-                                             params={"query": query, "rows": args.limit})
+                        payload = client.get(
+                            case,
+                            "https://api.crossref.org/works",
+                            params={"query": query, "rows": args.limit},
+                        )
                         records = payload["message"]["items"]
                     elif source == "openalex":
-                        payload = client.get(case, "https://api.openalex.org/works",
-                                             params={"search": query, "per-page": args.limit})
+                        payload = client.get(
+                            case,
+                            "https://api.openalex.org/works",
+                            params={"search": query, "per-page": args.limit},
+                        )
                         records = payload["results"]
                     else:
-                        payload = client.get(case, "https://api.semanticscholar.org/graph/v1/paper/search",
-                                             params={"query": query, "limit": args.limit,
-                                                     "fields": "title,authors,year,abstract,url,externalIds"})
+                        payload = client.get(
+                            case,
+                            "https://api.semanticscholar.org/graph/v1/paper/search",
+                            params={
+                                "query": query,
+                                "limit": args.limit,
+                                "fields": "title,authors,year,abstract,url,externalIds",
+                            },
+                        )
                         records = payload["data"]
                     case.update(search_status="passed", returned_count=len(records))
                     if not 1 <= len(records) <= args.limit:
@@ -228,28 +312,36 @@ async def verify(args):
 
         # Fetch the same DOI from Crossref to test a genuinely cross-provider merge.
         if openalex_candidates and "crossref" in (args.source or SOURCES):
-            case = {"source": "openalex+crossref", "query": "first overlapping DOI",
-                    "kind": "same_doi_lookup_and_merge"}
+            case = {
+                "source": "openalex+crossref",
+                "query": "first overlapping DOI",
+                "kind": "same_doi_lookup_and_merge",
+            }
             report["cases"].append(case)
             try:
                 # OpenAlex covers DOIs from multiple registries, not only Crossref.
                 # Record Crossref 404s as coverage gaps; never treat other errors as empty.
                 for original in openalex_candidates[:3]:
                     try:
-                        payload = client.get(case, f"https://api.crossref.org/works/{quote(original.doi, safe='/')}")
+                        payload = client.get(
+                            case, f"https://api.crossref.org/works/{quote(original.doi, safe='/')}"
+                        )
                         break
                     except requests.HTTPError as exc:
                         if exc.response.status_code != 404:
                             raise
                         case.setdefault("not_found_in_crossref", []).append(original.doi)
                 else:
-                    raise ValueError("No overlapping Crossref DOI in the first three OpenAlex records")
+                    raise ValueError(
+                        "No overlapping Crossref DOI in the first three OpenAlex records"
+                    )
                 case["query"] = original.doi
                 crossref = await client.crossref_paper(case, payload["message"])
                 await check_papers(case, [original, crossref])
                 merged = await PaperMerger().merge_and_deduplicate([original, crossref])
                 if len(merged) != 1 or {s.source for s in merged[0].source_records} != {
-                    PaperSource.OPENALEX, PaperSource.CROSSREF,
+                    PaperSource.OPENALEX,
+                    PaperSource.CROSSREF,
                 }:
                     raise ValueError("Same-DOI merge failed or discarded a provider record")
                 Paper.model_validate_json(merged[0].model_dump_json())
@@ -259,8 +351,11 @@ async def verify(args):
                 record_failure(case, exc)
     finally:
         client.session.close()
-        report.update(finished_at=datetime.now(UTC).isoformat(), all_passed=bool(report["cases"]) and all(
-            case["status"] == "passed" for case in report["cases"]))
+        report.update(
+            finished_at=datetime.now(UTC).isoformat(),
+            all_passed=bool(report["cases"])
+            and all(case["status"] == "passed" for case in report["cases"]),
+        )
         target = destination / "verification.json"
         target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"Evidence: {target}", flush=True)
@@ -269,8 +364,12 @@ async def verify(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", action="append", choices=SOURCES,
-                        help="Repeat to choose sources; default tests all three")
+    parser.add_argument(
+        "--source",
+        action="append",
+        choices=SOURCES,
+        help="Repeat to choose sources; default tests all three",
+    )
     parser.add_argument("--query", action="append", help="Repeat to test multiple queries")
     parser.add_argument("--limit", type=int, default=3, choices=range(1, 11), metavar="1..10")
     raise SystemExit(asyncio.run(verify(parser.parse_args())))

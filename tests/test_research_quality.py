@@ -142,7 +142,13 @@ async def test_failed_primary_pdf_uses_second_copy_and_records_attempts(tmp_path
     )
     result = await processor.process(paper)
     assert Path(result.fulltext.markdown_path).is_file()
-    assert [a["status"] for a in result.fulltext.attempts] == ["failed", "succeeded"]
+    downloads = [a for a in result.fulltext.attempts if a["stage"] == "download"]
+    assert [a["status"] for a in downloads] == ["failed", "succeeded"]
+    assert result.fulltext.attempts[-1] == {
+        "stage": "parse",
+        "status": "succeeded",
+        "reason": "PDF 转 Markdown 完成，解析器=unknown",
+    }
 
 
 @pytest.mark.asyncio
@@ -221,14 +227,14 @@ async def test_review_checks_length_and_retries_short_model_output():
         IDEA, [Paper(title="Scene text")], []
     )
     assert client.calls == 2
-    assert 300 <= review_length(report.executive_summary) <= 500
+    assert 1000 <= review_length(report.executive_summary) <= 1500
     assert "参考文献" in report.markdown
 
 
 @pytest.mark.asyncio
 async def test_offline_review_is_bounded_and_honest_about_missing_evidence():
     report = await ShortReviewWriter().write(IDEA, [Paper(title="Scene text detection")], [])
-    assert 300 <= review_length(report.executive_summary) <= 500
+    assert 1000 <= review_length(report.executive_summary) <= 1500
     assert "缺少足够材料" in report.executive_summary
     assert "抽取式模板" in report.markdown
 

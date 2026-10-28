@@ -37,8 +37,8 @@ async def research_papers(
 
     Args:
         research_idea: A specific research question or proposed direction.
-        top_k: Number of finally selected papers (1-20).
-        pre_rank_pool_size: Metadata-ranked candidates sent to full-text processing.
+        top_k: 最终选择的论文数量（1–100）。
+        pre_rank_pool_size: 送入全文处理的候选数量（1–200，必须不小于 top_k）。
         require_fulltext: Exclude records that cannot produce parsed full text.
 
     Returns:

@@ -86,8 +86,10 @@ async def _run(idea: ResearchIdea, limit: int) -> int:
     else:
         print(f"   [OK] all {sum(after.values())} source_records preserved")
     with_abstract = sum(1 for p in merged if p.abstract)
-    print(f"   [OK] {with_abstract}/{len(merged)} merged papers carry an abstract "
-          f"(missing ones stay None, never fabricated)")
+    print(
+        f"   [OK] {with_abstract}/{len(merged)} merged papers carry an abstract "
+        f"(missing ones stay None, never fabricated)"
+    )
     invented = [p for p in merged if p.abstract == "unknown" or p.abstract == ""]
     if invented:
         print("   [FAIL] fabricated placeholder abstracts found")

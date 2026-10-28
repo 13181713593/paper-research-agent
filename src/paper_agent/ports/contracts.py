@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -91,6 +91,16 @@ class OpenAccessResolver(Protocol):
         No paywall bypassing. ``is_open_access`` is provider metadata, while
         ``fulltext.access_status`` is the resolver's verified observation.
         """
+
+
+class StagedOpenAccessResolver(OpenAccessResolver, Protocol):
+    def iter_candidate_batches(self, paper: Paper) -> AsyncIterator[list[str]]:
+        """可选扩展：逐渠道生成候选；当前批次下载失败后才请求下一渠道。
+
+        单个渠道不可用时保留 attempts 并继续；成功停止或取消时须可关闭迭代器。
+        不改变只实现 resolve 的已有组件契约。
+        """
+        ...
 
 
 class PdfDownloader(Protocol):

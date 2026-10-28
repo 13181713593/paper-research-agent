@@ -82,6 +82,45 @@ def test_workbench_bounds_concurrency_and_preserves_inputs(tmp_path, papers):
     assert progress
 
 
+@pytest.mark.parametrize("count", [21, 100])
+def test_large_batch_keeps_download_and_summary_concurrency_bounded(tmp_path, count):
+    items = [Paper(title=f"Paper {index}") for index in range(count)]
+    processor = FakeProcessor(tmp_path)
+
+    class TrackedSummarizer(LlmSummarizer):
+        active = peak = 0
+
+        async def summarize(self, idea, paper):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            try:
+                await asyncio.sleep(0.001)
+                return await super().summarize(idea, paper)
+            finally:
+                self.active -= 1
+
+    summarizer = TrackedSummarizer()
+    components = ProcessingComponents(processor, summarizer, LlmReportWriter())
+    run = asyncio.run(ProcessingWorkbench(lambda _: components).run(IDEA, items, concurrency=4))
+    assert processor.peak == summarizer.peak == 4
+    assert len(run.result.summaries) == count
+    assert run.result.request.top_k == count
+    assert [p.paper_id for p in run.result.papers] == [p.paper_id for p in items]
+
+
+def test_workbench_rejects_batches_over_one_hundred():
+    with pytest.raises(ValueError, match="100"):
+        asyncio.run(
+            ProcessingWorkbench(mock.Mock()).run(
+                IDEA, [Paper(title=f"Paper {index}") for index in range(101)]
+            )
+        )
+    identifiers = "\n".join(f"2601.{index:05d}" for index in range(101))
+    with pytest.raises(ValueError, match="100"):
+        papers_from_arxiv_ids(identifiers)
+    assert len(papers_from_arxiv_ids("\n".join(identifiers.splitlines()[:100]))) == 100
+
+
 def test_single_failure_does_not_discard_other_papers(tmp_path, papers):
     components = ProcessingComponents(
         FakeProcessor(tmp_path, papers[0].title),
@@ -183,6 +222,36 @@ def test_benchmark_alternates_order_and_uses_new_cache_dirs(papers, tmp_path):
     assert "不含检索、下载和 LLM" in result["scope"]
     assert "操作系统" in result["cache_policy"]
     assert "1.80×" in benchmark_to_markdown(result)
+
+
+@pytest.mark.parametrize("count", [21, 100, 101])
+def test_benchmark_accepts_expanded_batch_and_checks_upper_limit(tmp_path, count):
+    items = []
+    for index in range(count):
+        path = tmp_path / f"paper-{index}.pdf"
+        path.write_bytes(make_pdf(f"Paper {index}. " + "Method details and evidence. " * 10))
+        paper = Paper(title=f"Paper {index}")
+        paper.fulltext.local_pdf_path = str(path)
+        items.append(paper)
+
+    async def measure(paths, output, workers):
+        assert len(paths) == count
+        return {
+            "workers": workers,
+            "seconds": 2 if workers == 1 else 1,
+            "successes": count,
+            "total": count,
+            "output_sha256": [str(index) for index in range(count)],
+        }
+
+    with mock.patch("paper_agent.application.processing_benchmark._measure", side_effect=measure):
+        if count > 100:
+            with pytest.raises(ValueError, match="100"):
+                asyncio.run(benchmark_pdf_parsing(items, tmp_path, workers=2))
+        else:
+            report = asyncio.run(benchmark_pdf_parsing(items, tmp_path, workers=2))
+            assert report["comparable"] and report["speedup"] == 2
+            assert len(report["dataset"]) == count
 
 
 @pytest.mark.parametrize("reason", ["failure", "mismatch", "input_changed"])
@@ -343,6 +412,80 @@ def test_arxiv_metadata_matches_ids_not_response_order():
     assert papers[0].source_records[0].raw_metadata["metadata_method"] == "arxiv_atom_api"
 
 
+@pytest.mark.parametrize("count", [21, 100])
+def test_arxiv_large_batch_is_serial_throttled_and_preserves_order(count):
+    papers = papers_from_arxiv_ids("\n".join(f"2601.{index:05d}" for index in range(count)))
+    original_ids = [paper.paper_id for paper in papers]
+    calls = []
+    active = peak = 0
+
+    async def respond(request):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            identifiers = request.url.params["id_list"].split(",")
+            assert len(identifiers) <= 20
+            calls.append(identifiers)
+            return httpx.Response(
+                200,
+                text=_atom_feed(
+                    *(
+                        _atom_entry(identifier + "v1", "Title " + identifier)
+                        for identifier in reversed(identifiers)
+                    )
+                ),
+            )
+        finally:
+            active -= 1
+
+    with mock.patch(
+        "paper_agent.adapters.arxiv_metadata.asyncio.sleep", new_callable=mock.AsyncMock
+    ) as pause:
+        warnings = asyncio.run(
+            ArxivMetadataEnricher(transport=httpx.MockTransport(respond)).enrich(papers)
+        )
+    assert not warnings
+    assert peak == 1
+    assert [identifier for batch in calls for identifier in batch] == [p.arxiv_id for p in papers]
+    assert [p.paper_id for p in papers] == original_ids
+    assert all(p.title == "Title " + p.arxiv_id and p.authors and p.abstract for p in papers)
+    assert pause.await_count == len(calls) - 1
+    assert all(call.args == (3.0,) for call in pause.await_args_list)
+
+
+def test_arxiv_batch_failure_keeps_successful_batches():
+    papers = papers_from_arxiv_ids("\n".join(f"2601.{index:05d}" for index in range(41)))
+    originals = [p.model_copy(deep=True) for p in papers]
+    calls = []
+
+    def respond(request):
+        identifiers = request.url.params["id_list"].split(",")
+        calls.append(identifiers)
+        if len(calls) == 2:
+            return httpx.Response(503)
+        return httpx.Response(
+            200, text=_atom_feed(*(_atom_entry(identifier + "v1") for identifier in identifiers))
+        )
+
+    warnings = asyncio.run(
+        ArxivMetadataEnricher(
+            request_interval_seconds=0, transport=httpx.MockTransport(respond)
+        ).enrich(papers)
+    )
+    assert len(calls) == 3
+    assert len(warnings) == 1 and "第 2 批" in warnings[0]
+    assert all(p.authors for p in [*papers[:20], papers[40]])
+    assert papers[20:40] == originals[20:40]
+
+
+def test_arxiv_metadata_rejects_more_than_one_hundred_ids():
+    papers = [Paper(title="Paper", arxiv_id=f"2601.{index:05d}") for index in range(101)]
+    enricher = ArxivMetadataEnricher(transport=httpx.MockTransport(mock.Mock()))
+    with pytest.raises(ValueError, match="100"):
+        asyncio.run(enricher.enrich(papers))
+
+
 def test_arxiv_metadata_does_not_mix_versions_or_papers():
     papers = papers_from_arxiv_ids("1706.03762v1\n1409.0473")
     original = papers[0].model_copy(deep=True)
@@ -468,13 +611,17 @@ def test_public_arxiv_workbench_smoke(tmp_path, monkeypatch):
     os.getenv("RUN_LLM_SMOKE") != "1",
     reason="仅显式开启时发送公开论文材料并消耗真实 API 额度",
 )
-def test_live_llm_summary_and_report_without_fallback(monkeypatch):
+def test_live_llm_summary_and_report_without_fallback(monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    from paper_agent.adapters.short_review import ShortReviewWriter, review_length
     from paper_agent.bootstrap import build_processing_workbench
     from paper_agent.config import Settings
+    from paper_agent.ui.markdown_exports import summary_to_markdown
 
     assert (os.getenv("OPENAI_API_KEY") or "").strip(), "请通过本地配置注入 API Key"
     monkeypatch.setenv("MINERU_API_KEY", "")
-    settings = Settings.from_env()
+    settings = replace(Settings.from_env(), data_dir=str(tmp_path), markdown_backend="pypdf")
     idea = ResearchIdea(text="分析 Transformer 的注意力机制、实验表现及研究局限，请用中文总结。")
     papers = papers_from_arxiv_ids("1706.03762")
     # 禁止把抽取式或模板回退当成真实 API 测试成功。
@@ -483,7 +630,7 @@ def test_live_llm_summary_and_report_without_fallback(monkeypatch):
             LlmSummarizer, "_extractive_summary", side_effect=AssertionError("发生抽取式回退")
         ) as summary_fallback,
         mock.patch.object(
-            LlmReportWriter, "_template_report", side_effect=AssertionError("发生模板回退")
+            ShortReviewWriter, "_fallback", side_effect=AssertionError("发生综述模板回退")
         ) as report_fallback,
     ):
         run = asyncio.run(build_processing_workbench(settings).run(idea, papers, concurrency=1))
@@ -494,12 +641,25 @@ def test_live_llm_summary_and_report_without_fallback(monkeypatch):
     assert run.result.summaries[0].generated_from_fulltext
     assert run.result.summaries[0].evidence
     assert run.result.report is not None
-    assert "跨论文对比矩阵" in run.result.report.markdown
+    assert 1000 <= review_length(run.result.report.executive_summary) <= 1500
+    assert "模型综合" in run.result.report.markdown
+    paper = run.result.papers[0]
+    assert paper.authors and paper.abstract and paper.fulltext.local_pdf_path
+    assert paper.fulltext.parser_name == "pypdf"
+    source = Path(paper.fulltext.markdown_path).read_text("utf-8")
+    (tmp_path / "summary.md").write_text(
+        summary_to_markdown(run.result.summaries[0], paper, source_text=source), "utf-8"
+    )
+    (tmp_path / "research_report.md").write_text(run.result.report.markdown, "utf-8")
+    (tmp_path / "result.json").write_text(run.result.model_dump_json(indent=2), "utf-8")
     print(
         {
             "模型": settings.llm_model,
             "真实单篇总结": len(run.result.summaries),
             "真实综合报告": 1,
+            "综述字数": review_length(run.result.report.executive_summary),
+            "解析后端": paper.fulltext.parser_name,
             "发生降级": False,
+            "产物目录": str(tmp_path),
         }
     )

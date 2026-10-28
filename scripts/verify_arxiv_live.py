@@ -2,6 +2,7 @@
 
 Run from the project root after installation, or set PYTHONPATH=src.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,17 +63,30 @@ async def verify(args: argparse.Namespace) -> int:
         filename = f"response-{index:03d}.xml"
         body = response.content
         (destination / filename).write_bytes(body)
-        exchanges.append({
-            "at": datetime.now(UTC).isoformat(),
-            "url": response.url,
-            "status": response.status_code,
-            "bytes": len(body),
-            "sha256": hashlib.sha256(body).hexdigest(),
-            "body_file": filename,
-            "headers": {k: v for k, v in response.headers.items() if k.lower() in {
-                "content-type", "date", "age", "x-cache", "retry-after", "server", "via",
-            }},
-        })
+        exchanges.append(
+            {
+                "at": datetime.now(UTC).isoformat(),
+                "url": response.url,
+                "status": response.status_code,
+                "bytes": len(body),
+                "sha256": hashlib.sha256(body).hexdigest(),
+                "body_file": filename,
+                "headers": {
+                    k: v
+                    for k, v in response.headers.items()
+                    if k.lower()
+                    in {
+                        "content-type",
+                        "date",
+                        "age",
+                        "x-cache",
+                        "retry-after",
+                        "server",
+                        "via",
+                    }
+                },
+            }
+        )
 
     session.hooks["response"].append(capture)
     try:
@@ -80,11 +94,18 @@ async def verify(args: argparse.Namespace) -> int:
             exchanges.clear()
             attempts.clear()
             started = time.monotonic()
-            case = {"query": query, "limit": args.limit, "started_at": datetime.now(UTC).isoformat()}
+            case = {
+                "query": query,
+                "limit": args.limit,
+                "started_at": datetime.now(UTC).isoformat(),
+            }
             try:
-                plan = SearchPlan(intent_summary="Live arXiv metadata verification", queries=[
-                    SearchQuery(source=PaperSource.ARXIV, query=query, limit=args.limit),
-                ])
+                plan = SearchPlan(
+                    intent_summary="Live arXiv metadata verification",
+                    queries=[
+                        SearchQuery(source=PaperSource.ARXIV, query=query, limit=args.limit),
+                    ],
+                )
                 papers = await retriever.search(plan)
                 if not papers or len(papers) > args.limit:
                     raise ValueError("API must return 1..limit papers for this smoke query")
@@ -105,22 +126,35 @@ async def verify(args: argparse.Namespace) -> int:
                     expected_abstract = " ".join(entry.findtext("atom:summary", "", ns).split())
                     if paper.title != expected_title or paper.abstract != expected_abstract:
                         raise ValueError("Canonical title/abstract differs from API response")
-                    if not (paper.authors and paper.publication_date and paper.fulltext.pdf_url
-                            and paper.arxiv_id and paper.bibtex and record.raw_metadata):
+                    if not (
+                        paper.authors
+                        and paper.publication_date
+                        and paper.fulltext.pdf_url
+                        and paper.arxiv_id
+                        and paper.bibtex
+                        and record.raw_metadata
+                    ):
                         raise ValueError("Required smoke-check metadata is missing")
                     from paper_agent.adapters import BibTexMapper
+
                     exported = await BibTexMapper().to_paper(paper.bibtex, source="arxiv")
-                    if (exported.title != paper.title or exported.year != paper.year
-                            or exported.arxiv_id != paper.arxiv_id
-                            or exported.doi != paper.doi
-                            or len(exported.authors) != len(paper.authors)):
+                    if (
+                        exported.title != paper.title
+                        or exported.year != paper.year
+                        or exported.arxiv_id != paper.arxiv_id
+                        or exported.doi != paper.doi
+                        or len(exported.authors) != len(paper.authors)
+                    ):
                         raise ValueError("Standalone BibTeX export lost available citation fields")
                 merged = await PaperMerger().merge_and_deduplicate(papers + papers)
                 if len(merged) != len(papers):
                     raise ValueError("Repeated live records were not deduplicated correctly")
-                case.update(status="passed", count=len(papers), papers=[
-                    paper.model_dump(mode="json") for paper in papers
-                ], deduplicated_count=len(merged))
+                case.update(
+                    status="passed",
+                    count=len(papers),
+                    papers=[paper.model_dump(mode="json") for paper in papers],
+                    deduplicated_count=len(merged),
+                )
                 print(f"PASS {query!r}: {len(papers)} papers", flush=True)
                 for paper in papers:
                     print(f"  {paper.arxiv_id}: {paper.title}", flush=True)

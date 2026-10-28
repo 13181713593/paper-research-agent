@@ -151,5 +151,80 @@ class PdfDownloaderTest(unittest.TestCase):
             asyncio.run(downloader.download(Paper(title="No URL"), Path(tmp)))
 
 
+def test_concurrent_requests_for_same_pdf_keep_cache_files_intact(tmp_path):
+    async def respond(request):
+        await asyncio.sleep(0.001)
+        return _pdf_response()
+
+    downloader = HttpPdfDownloader(transport=httpx.MockTransport(respond))
+
+    async def run():
+        return await asyncio.gather(*(downloader.download(_paper(), tmp_path) for _ in range(12)))
+
+    paths = asyncio.run(run())
+    assert len(set(paths)) == 1
+    assert paths[0].read_bytes() == PDF_BYTES
+    meta = json.loads(paths[0].with_suffix(".json").read_text())
+    assert meta["bytes"] == len(PDF_BYTES)
+    assert not list(tmp_path.rglob("*.tmp"))
+
+
+class ConnectionFailureTest(unittest.TestCase):
+    def _failing_downloader(self, calls, **overrides) -> HttpPdfDownloader:
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            raise httpx.ConnectError("dns failure", request=request)
+
+        return HttpPdfDownloader(
+            transport=httpx.MockTransport(handler),
+            retry_limit=3,
+            retry_backoff_seconds=0.001,
+            **overrides,
+        )
+
+    def test_connect_error_skips_retry_and_trips_after_repeated_failure(self):
+        calls: list[str] = []
+        downloader = self._failing_downloader(calls)
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("a", "b"):
+                with self.assertRaises(ProviderUnavailableError):
+                    asyncio.run(
+                        downloader.download(_paper(f"https://broken.example/{name}.pdf"), Path(tmp))
+                    )
+            with self.assertRaises(ProviderUnavailableError) as caught:
+                asyncio.run(downloader.download(_paper("https://broken.example/c.pdf"), Path(tmp)))
+        # 连接级失败不重试：两次真实请求后，同域名后续请求直接跳过。
+        self.assertEqual(len(calls), 2)
+        self.assertIn("已连接失败", str(caught.exception))
+
+    def test_doi_resolver_host_is_never_tripped(self):
+        calls: list[str] = []
+        downloader = self._failing_downloader(calls)
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("a", "b", "c"):
+                with self.assertRaises(ProviderUnavailableError):
+                    asyncio.run(
+                        downloader.download(_paper(f"https://doi.org/10.1/{name}"), Path(tmp))
+                    )
+        self.assertEqual(len(calls), 3)
+
+    def test_http_client_is_reused_across_downloads(self):
+        transport = RecordingTransport(lambda request: _pdf_response())
+        downloader = HttpPdfDownloader(transport=transport, retry_backoff_seconds=0.001)
+
+        async def run(tmp: Path):
+            await downloader.download(_paper("https://example.org/a.pdf"), tmp)
+            first_client = downloader._client
+            await downloader.download(_paper("https://example.org/b.pdf"), tmp)
+            self.assertIsNotNone(first_client)
+            self.assertIs(downloader._client, first_client)
+            await downloader.aclose()
+            self.assertIsNone(downloader._client)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            asyncio.run(run(Path(tmp)))
+        self.assertEqual(len(transport.requests), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -52,5 +52,57 @@ class PipelineTest(unittest.TestCase):
         self.assertTrue(any("failing_demo_source" in warning for warning in result.warnings))
 
 
+def test_main_pipeline_bounds_both_processing_and_summary_calls():
+    deps = build_demo_dependencies()
+
+    class TrackedProcessor:
+        active = peak = 0
+
+        async def process(self, paper):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            try:
+                await asyncio.sleep(0.01)
+                return await original_processor.process(paper)
+            finally:
+                self.active -= 1
+
+    class TrackedSummarizer:
+        active = peak = 0
+
+        async def summarize(self, idea, paper):
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            try:
+                await asyncio.sleep(0.01)
+                return await original_summarizer.summarize(idea, paper)
+            finally:
+                self.active -= 1
+
+    original_processor, original_summarizer = deps.fulltext_processor, deps.summarizer
+    processor, summarizer = TrackedProcessor(), TrackedSummarizer()
+    deps.fulltext_processor, deps.summarizer = processor, summarizer
+    request = PipelineRequest(
+        idea=ResearchIdea(text="scientific models"), top_k=2, pre_rank_pool_size=3
+    )
+    result = asyncio.run(ResearchPipeline(deps, max_concurrency=1).run(request))
+    assert result.status != ProcessingStatus.FAILED, result.warnings
+    assert len(result.summaries) == 2
+    assert processor.peak == summarizer.peak == 1
+
+
+def test_main_pipeline_accepts_larger_download_pool():
+    request = PipelineRequest(
+        idea=ResearchIdea(text="scientific models"), top_k=100, pre_rank_pool_size=200
+    )
+    assert request.top_k == 100 and request.pre_rank_pool_size == 200
+    for concurrency in (0, 33):
+        try:
+            ResearchPipeline(build_demo_dependencies(), max_concurrency=concurrency)
+        except ValueError:
+            continue
+        raise AssertionError("应拒绝不合法的并发预算")
+
+
 if __name__ == "__main__":
     unittest.main()

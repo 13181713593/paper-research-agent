@@ -1,6 +1,55 @@
 """Serializable stage snapshots, independent of mutable adapter objects and raw payloads."""
 
+import os
+import re
+
 from paper_agent.domain.models import Paper, PaperSummary, ResearchReport, SearchPlan
+
+_SENSITIVE_KEYS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "access_token",
+    "token",
+    "password",
+    "email",
+    "mailto",
+    "signature",
+    "policy",
+    "key_pair_id",
+    "expires",
+}
+_SENSITIVE_QUERY = re.compile(
+    r"([?&](?:amp;)?(?:api_key|apikey|access_token|token|password|email|mailto|"
+    r"signature|policy|key-pair-id|expires|x-amz-[\w-]+|x-goog-[\w-]+)=)"
+    r"[^&\s\"'<>]+",
+    re.IGNORECASE,
+)
+
+
+def redact_audit_value(value):
+    """仅脱敏展示/导出副本；下载器仍使用原始 URL，不改动领域对象。"""
+    if isinstance(value, dict):
+        return {
+            key: "[已隐藏]"
+            if key.lower().replace("-", "_") in _SENSITIVE_KEYS
+            else redact_audit_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_audit_value(item) for item in value]
+    if isinstance(value, str):
+        value = _SENSITIVE_QUERY.sub(r"\1[已隐藏]", value)
+        for name, secret in os.environ.items():
+            if (
+                secret
+                and len(secret) >= 6
+                and any(
+                    marker in name.upper() for marker in ("API_KEY", "TOKEN", "PASSWORD", "EMAIL")
+                )
+            ):
+                value = value.replace(secret, "[已隐藏]")
+    return value
 
 
 def paper_snapshot(paper: Paper) -> dict:

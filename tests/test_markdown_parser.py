@@ -1,12 +1,18 @@
 import asyncio
+import io
 import json
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+
+import httpx
+import pytest
 
 from paper_agent.adapters.markdown_parser import (
     ExtractedDocument,
     PdfMarkdownParser,
+    _text_to_markdown,
     score_parse_quality,
     split_sections,
 )
@@ -198,6 +204,233 @@ class MarkdownParserTest(unittest.TestCase):
             pdf_path = self._write_pdf(tmp, make_pdf(""))
             with self.assertRaises(FullTextParseError):
                 asyncio.run(parser.parse(pdf_path, Path(tmp)))
+
+
+def test_hard_wraps_reflow_without_destroying_structure():
+    text = (
+        "A scientific paper\n\nAbstract\nThis para-\ngraph is split\n"
+        "over several lines.\n\nA second paragraph.\n\nMethod\n"
+        "- first item\n- second item\n\n| A | B |\n| --- | --- |\n"
+        "\n中文段落被\n人为换行。\n\n```python\nx = 1\ny = 2\n```\n"
+        "\n$$\nx = y + z\n$$\n"
+    )
+    markdown = _text_to_markdown(text, "fallback")
+    assert "This paragraph is split over several lines." in markdown
+    assert "lines.\n\nA second paragraph." in markdown
+    assert "## Abstract" in markdown and "## Method" in markdown
+    assert "- first item\n- second item" in markdown
+    assert "| A | B |\n| --- | --- |" in markdown
+    assert "中文段落被人为换行。" in markdown
+    assert "```python\nx = 1\ny = 2\n```" in markdown
+    assert "$$\nx = y + z\n$$" in markdown
+
+
+def _mineru_zip(files):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, content in files.items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+def _mineru_transport(files, requests=None):
+    payload = _mineru_zip(files)
+
+    def respond(request):
+        if requests is not None:
+            requests.append(request)
+        if request.url.path.endswith("file-urls/batch"):
+            body = json.loads(request.content)
+            assert body["enable_formula"] and body["enable_table"]
+            assert request.headers["authorization"] == "Bearer test-token"
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {"batch_id": "test", "file_urls": ["https://upload.example/file"]},
+                },
+            )
+        if request.method == "PUT":
+            assert "authorization" not in request.headers
+            return httpx.Response(200)
+        if "extract-results" in request.url.path:
+            assert request.headers["authorization"] == "Bearer test-token"
+            return httpx.Response(
+                200,
+                json={
+                    "data": {
+                        "extract_result": [
+                            {"state": "done", "full_zip_url": "https://cdn.example/result.zip"}
+                        ]
+                    }
+                },
+            )
+        assert "authorization" not in request.headers
+        return httpx.Response(200, content=payload)
+
+    return httpx.MockTransport(respond)
+
+
+def test_mineru_preserves_math_saves_images_and_does_not_leak_token(tmp_path):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(make_pdf("A source paper"))
+    text = (
+        "# Paper\n\nScientific document with enough characters for extraction.\n\n"
+        "\\[ E = mc^2 \\]\nInline \\(x+y\\).\n![figure](images/fig.png)\n"
+        "```latex\n\\[do not rewrite\\]\n```\n"
+    )
+    requests = []
+    parser = PdfMarkdownParser(
+        backend="mineru",
+        mineru_api_key="test-token",
+        transport=_mineru_transport(
+            {
+                "result/full.md": text,
+                "result/images/fig.png": b"image-bytes",
+                "result/../evil.png": b"must-not-save",
+                "result/images/secret.txt": b"not-an-image",
+            },
+            requests,
+        ),
+    )
+    path, _ = asyncio.run(parser.parse(pdf, tmp_path / "md"))
+    markdown = path.read_text("utf-8")
+    assert "$$\nE = mc^2\n$$" in markdown and "$x+y$" in markdown
+    assert "```latex\n\\[do not rewrite\\]\n```" in markdown
+    assert "paper_assets/images/fig.png" in markdown
+    assert (path.parent / "paper_assets/images/fig.png").read_bytes() == b"image-bytes"
+    assert not (tmp_path / "evil.png").exists()
+    assert not list(path.parent.rglob("*.txt"))
+    meta = json.loads(path.with_suffix(".parse.json").read_text())
+    assert len(meta["assets"]) == 1
+    assert len(requests) == 4
+
+
+def test_mineru_image_path_with_spaces_remains_readable_in_exports(tmp_path):
+    from paper_agent.domain.models import Paper
+    from paper_agent.ui.markdown_exports import embed_paper_images, paper_markdown_files
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(make_pdf("Source paper"))
+    parser = PdfMarkdownParser(
+        backend="mineru",
+        mineru_api_key="test-token",
+        transport=_mineru_transport(
+            {
+                "full.md": SECTIONED_TEXT + "\n![figure](<images/figure (1).png>)\n",
+                "images/figure (1).png": b"image",
+            }
+        ),
+    )
+    path, _ = asyncio.run(parser.parse(pdf, tmp_path / "md"))
+    markdown = path.read_text("utf-8")
+    assert "paper_assets/images/figure%20%281%29.png" in markdown
+    paper = Paper(title="Paper")
+    paper.fulltext.markdown_path = str(path)
+    assert "data:image/png;base64," in embed_paper_images(paper, tmp_path, markdown)
+    assert paper_markdown_files(paper, tmp_path)["paper_assets/images/figure (1).png"] == b"image"
+    assert parser.cache_is_current(pdf, path)
+
+
+@pytest.mark.parametrize("mutation", ["converter", "backend", "version", "image", "markdown"])
+def test_parser_cache_invalidates_for_backend_and_resource_changes(tmp_path, mutation):
+    class AssetExtractor(FakeExtractor):
+        async def extract(self, path):
+            document = await super().extract(path)
+            document.assets = {"images/fig.png": b"image"}
+            return document
+
+    extractor = AssetExtractor(SECTIONED_TEXT + "\n![figure](images/fig.png)", markdown_ready=True)
+    parser = PdfMarkdownParser(extractor=extractor)
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(make_pdf("source"))
+    markdown, _ = asyncio.run(parser.parse(pdf, tmp_path / "md"))
+    if mutation == "image":
+        (markdown.parent / "paper_assets/images/fig.png").rename(tmp_path / "removed.png")
+    elif mutation == "markdown":
+        markdown.write_text("old broken markdown")
+    elif mutation == "backend":
+        extractor.name = "different-backend"
+    elif mutation == "version":
+        extractor.version = "new-version"
+    else:
+        meta_path = markdown.with_suffix(".parse.json")
+        meta = json.loads(meta_path.read_text())
+        meta["converter_version"] = "old-version"
+        meta_path.write_text(json.dumps(meta))
+    asyncio.run(parser.parse(pdf, tmp_path / "md"))
+    assert extractor.calls == 2
+    assert (markdown.parent / "paper_assets/images/fig.png").exists()
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"../full.md": SECTIONED_TEXT},
+        {"no-markdown.txt": "missing"},
+    ],
+)
+def test_mineru_rejects_invalid_result_archive(tmp_path, files):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(make_pdf("source"))
+    parser = PdfMarkdownParser(
+        backend="mineru",
+        mineru_api_key="test-token",
+        transport=_mineru_transport(files),
+    )
+    with pytest.raises(FullTextParseError):
+        asyncio.run(parser.parse(pdf, tmp_path / "md"))
+
+
+def test_mineru_rejects_oversized_uncompressed_result(tmp_path, monkeypatch):
+    monkeypatch.setattr("paper_agent.adapters.markdown_parser.MAX_RESULT_BYTES", 5)
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(make_pdf("source"))
+    parser = PdfMarkdownParser(
+        backend="mineru",
+        mineru_api_key="test-token",
+        transport=_mineru_transport({"full.md": SECTIONED_TEXT}),
+    )
+    with pytest.raises(FullTextParseError, match="上限"):
+        asyncio.run(parser.parse(pdf, tmp_path / "md"))
+
+
+@pytest.mark.skipif(not HAS_PYPDF, reason="需要 pypdf")
+def test_pypdf_extracts_real_embedded_image(tmp_path):
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject, NumberObject
+
+    writer = PdfWriter()
+    page = writer.add_page(
+        PdfReader(io.BytesIO(make_pdf("Readable scientific text. " * 8))).pages[0]
+    )
+    image = DecodedStreamObject()
+    image.set_data(bytes([255, 0, 0] * 4))
+    image.update(
+        {
+            NameObject("/Type"): NameObject("/XObject"),
+            NameObject("/Subtype"): NameObject("/Image"),
+            NameObject("/Width"): NumberObject(2),
+            NameObject("/Height"): NumberObject(2),
+            NameObject("/ColorSpace"): NameObject("/DeviceRGB"),
+            NameObject("/BitsPerComponent"): NumberObject(8),
+        }
+    )
+    page["/Resources"][NameObject("/XObject")] = DictionaryObject(
+        {NameObject("/Im1"): writer._add_object(image)}
+    )
+    path = tmp_path / "image.pdf"
+    with path.open("wb") as stream:
+        writer.write(stream)
+    markdown, _ = asyncio.run(PdfMarkdownParser(backend="pypdf").parse(path, tmp_path / "md"))
+    assert "image_assets/images/page-0001-001.png" in markdown.read_text()
+    assert (
+        (markdown.parent / "image_assets/images/page-0001-001.png")
+        .read_bytes()
+        .startswith(b"\x89PNG")
+    )
+    meta = json.loads(markdown.with_suffix(".parse.json").read_text())
+    assert "无法可靠识别公式" in meta["warnings"][0]
 
 
 if __name__ == "__main__":

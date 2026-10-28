@@ -50,6 +50,8 @@ class ResearchPipeline:
     def __init__(self, deps: PipelineDependencies, max_concurrency: int = 4):
         if len(deps.retrievers) < 2:
             raise ValueError("At least two independent retrievers are required")
+        if not 1 <= max_concurrency <= 32:
+            raise ValueError("并发数必须在 1 至 32 之间。")
         self.deps = deps
         self.max_concurrency = max_concurrency
 
@@ -285,94 +287,194 @@ class ResearchPipeline:
             )
 
             semaphore = asyncio.Semaphore(self.max_concurrency)
+            demo_component = type(self.deps.fulltext_processor).__name__.startswith("Demo")
 
-            async def process_one(paper: Paper) -> Paper | None:
-                async with semaphore:
-                    started_at = datetime.now(UTC)
-                    started = perf_counter()
-                    details = {
-                        "title": paper.title,
-                        "demo": type(self.deps.fulltext_processor).__name__.startswith("Demo"),
-                    }
-                    await emit(
-                        StageEvent(
-                            stage=PipelineStage.FULLTEXT_PROCESSED,
-                            scope="paper",
-                            paper_id=paper.paper_id,
-                            status=ProcessingStatus.RUNNING,
-                            started_at=started_at,
-                            details=details,
-                        )
+            def paper_details(paper: Paper) -> dict:
+                return {"title": paper.title, "demo": demo_component}
+
+            async def mark_running(
+                stage_name: PipelineStage, paper: Paper
+            ) -> tuple[datetime, float]:
+                started_at = datetime.now(UTC)
+                started = perf_counter()
+                await emit(
+                    StageEvent(
+                        stage=stage_name,
+                        scope="paper",
+                        paper_id=paper.paper_id,
+                        status=ProcessingStatus.RUNNING,
+                        started_at=started_at,
+                        details=paper_details(paper),
                     )
-                    outcome = ProcessingStatus.SUCCEEDED
-                    message = None
-                    processed_paper = None
-                    try:
-                        processed_paper = await self.deps.fulltext_processor.process(paper)
+                )
+                return started_at, started
+
+            async def emit_outcome(
+                stage_name: PipelineStage,
+                paper: Paper,
+                started_at: datetime,
+                started: float,
+                *,
+                status: ProcessingStatus,
+                message: str | None = None,
+                output_count: int | None = None,
+            ) -> None:
+                await emit(
+                    StageEvent(
+                        stage=stage_name,
+                        scope="paper",
+                        paper_id=paper.paper_id,
+                        status=status,
+                        started_at=started_at,
+                        finished_at=datetime.now(UTC),
+                        output_count=output_count,
+                        duration_ms=int((perf_counter() - started) * 1000),
+                        message=message,
+                        details={**paper_details(paper), "papers": [paper_snapshot(paper)]},
+                    )
+                )
+
+            download_failures: dict[object, Exception] = {}
+
+            async def settle_conversion(
+                paper: Paper,
+                started_at: datetime,
+                started: float,
+                converted: Paper | None,
+                failure: Exception | None,
+            ) -> Paper | None:
+                outcome = ProcessingStatus.SUCCEEDED
+                message = None
+                if failure is not None:
                     # Adapter implementations come from independent groups and may
                     # wrap several third-party SDKs. This per-item boundary must
                     # convert any adapter failure into fallback/exclusion state.
-                    except Exception as exc:  # noqa: BLE001
-                        if request.allow_abstract_fallback:
-                            warnings.append(
-                                f"{paper.title}: full text unavailable; abstract fallback ({exc})"
-                            )
-                            processed_paper = paper
-                            outcome = ProcessingStatus.PARTIAL
-                            message = (
-                                f"全文处理失败，保留{'摘要' if paper.abstract else '元数据'}：{exc}"
-                            )
-                            paper.fulltext.parse_error = paper.fulltext.parse_error or str(exc)
-                        else:
-                            warnings.append(
-                                f"{paper.title}: excluded because full text failed ({exc})"
-                            )
-                            outcome = ProcessingStatus.SKIPPED
-                            message = f"全文处理失败，排除文献：{exc}"
-                    if (
-                        processed_paper is not None
-                        and request.require_fulltext
-                        and not processed_paper.fulltext.markdown_path
-                    ):
-                        processed_paper = None
-                        outcome = ProcessingStatus.SKIPPED
-                        message = f"仅保留全文已解析文献，排除当前文献。{message or ''}"
-                    await emit(
-                        StageEvent(
-                            stage=PipelineStage.FULLTEXT_PROCESSED,
-                            scope="paper",
-                            paper_id=paper.paper_id,
-                            status=outcome,
-                            started_at=started_at,
-                            finished_at=datetime.now(UTC),
-                            duration_ms=int((perf_counter() - started) * 1000),
-                            output_count=int(processed_paper is not None),
-                            message=message,
-                            details={
-                                **details,
-                                "papers": [paper_snapshot(processed_paper or paper)],
-                            },
+                    if request.allow_abstract_fallback:
+                        warnings.append(
+                            f"{paper.title}: full text unavailable; abstract fallback ({failure})"
                         )
-                    )
-                    return processed_paper
+                        converted = paper
+                        outcome = ProcessingStatus.PARTIAL
+                        message = (
+                            f"全文处理失败，保留{'摘要' if paper.abstract else '元数据'}：{failure}"
+                        )
+                        paper.fulltext.parse_error = paper.fulltext.parse_error or str(failure)
+                    else:
+                        warnings.append(
+                            f"{paper.title}: excluded because full text failed ({failure})"
+                        )
+                        outcome = ProcessingStatus.SKIPPED
+                        message = f"全文处理失败，排除文献：{failure}"
+                if (
+                    converted is not None
+                    and request.require_fulltext
+                    and not converted.fulltext.markdown_path
+                ):
+                    converted = None
+                    outcome = ProcessingStatus.SKIPPED
+                    message = f"仅保留全文已解析文献，排除当前文献。{message or ''}"
+                if converted is None and failure is None:
+                    outcome = ProcessingStatus.SKIPPED
+                    message = "未取得公开全文，未进入 Markdown 转换。"
+                await emit_outcome(
+                    PipelineStage.MARKDOWN_CONVERTED,
+                    paper,
+                    started_at,
+                    started,
+                    status=outcome,
+                    message=message,
+                    output_count=int(converted is not None),
+                )
+                return converted
 
-            async def process_pool() -> list[Paper]:
-                processed = await asyncio.gather(*(process_one(p) for p in pool))
-                eligible = [p for p in processed if p is not None]
-                processed_by_id = {p.paper_id: p for p in pool}
-                metadata_papers[:] = [processed_by_id.get(p.paper_id, p) for p in metadata_papers]
-                if len(eligible) < request.top_k:
-                    warnings.append(
-                        f"Only {len(eligible)} eligible papers remain for requested top_k={request.top_k}"
+            async def download_one(paper: Paper) -> Paper | None:
+                started_at, started = await mark_running(PipelineStage.DOWNLOADED, paper)
+                failure = None
+                try:
+                    download = getattr(self.deps.fulltext_processor, "download", None)
+                    if callable(download):
+                        await download(paper)
+                    else:
+                        # 单步处理器（如联调组件）没有分段接口，整体放在下载阶段完成。
+                        async with semaphore:
+                            await self.deps.fulltext_processor.process(paper)
+                except Exception as exc:  # noqa: BLE001 - 单篇失败必须降级而不是中断整段
+                    failure = exc
+                if failure is not None:
+                    download_failures[paper.paper_id] = failure
+                    await emit_outcome(
+                        PipelineStage.DOWNLOADED,
+                        paper,
+                        started_at,
+                        started,
+                        status=ProcessingStatus.PARTIAL,
+                        message=f"未取得公开全文：{failure}",
+                        output_count=0,
                     )
-                return eligible
+                    return None
+                await emit_outcome(
+                    PipelineStage.DOWNLOADED,
+                    paper,
+                    started_at,
+                    started,
+                    status=ProcessingStatus.SUCCEEDED,
+                    output_count=1,
+                )
+                return paper
 
-            processed = await stage(
-                PipelineStage.FULLTEXT_PROCESSED,
-                process_pool,
+            async def download_pool() -> list[Paper]:
+                downloaded = await asyncio.gather(*(download_one(p) for p in pool))
+                return [p for p in downloaded if p is not None]
+
+            async def convert_one(paper: Paper) -> Paper | None:
+                started_at, started = await mark_running(PipelineStage.MARKDOWN_CONVERTED, paper)
+                converted = None
+                failure = download_failures.get(paper.paper_id)
+                if failure is None:
+                    try:
+                        convert = getattr(self.deps.fulltext_processor, "convert", None)
+                        converted = await convert(paper) if callable(convert) else paper
+                    except Exception as exc:  # noqa: BLE001 - 单篇失败必须降级而不是中断整段
+                        failure = exc
+                return await settle_conversion(paper, started_at, started, converted, failure)
+
+            async def convert_pool(downloaded: list[Paper]) -> list[Paper]:
+                # 未取得 PDF 的文献同样进入本阶段，用于展示“跳过转换”的原因。
+                ready = {p.paper_id for p in downloaded}
+                outcomes = await asyncio.gather(
+                    *(
+                        convert_one(paper)
+                        if paper.paper_id in ready
+                        else settle_conversion_without_download(paper)
+                        for paper in pool
+                    )
+                )
+                return [p for p in outcomes if p is not None]
+
+            async def settle_conversion_without_download(paper: Paper) -> Paper | None:
+                started_at, started = await mark_running(PipelineStage.MARKDOWN_CONVERTED, paper)
+                return await settle_conversion(
+                    paper, started_at, started, None, download_failures.get(paper.paper_id)
+                )
+
+            downloaded = await stage(
+                PipelineStage.DOWNLOADED,
+                download_pool,
                 len(pool),
                 component=self.deps.fulltext_processor,
             )
+            processed = await stage(
+                PipelineStage.MARKDOWN_CONVERTED,
+                lambda: convert_pool(downloaded),
+                len(pool),
+                component=self.deps.fulltext_processor,
+            )
+            processed_by_id = {p.paper_id: p for p in pool}
+            metadata_papers[:] = [processed_by_id.get(p.paper_id, p) for p in metadata_papers]
+            if len(processed) < request.top_k:
+                warnings.append(
+                    f"Only {len(processed)} eligible papers remain for requested top_k={request.top_k}"
+                )
 
             async def trace_paper(name, paper, operation):
                 started_at = datetime.now(UTC)
@@ -447,16 +549,18 @@ class ResearchPipeline:
                 component=self.deps.final_ranker,
             )
 
+            async def summarize_one(paper: Paper):
+                # 下载和总结处于不同阶段，但必须遵守同一批次的并发预算。
+                async with semaphore:
+                    return await trace_paper(
+                        PipelineStage.SUMMARIZED,
+                        paper,
+                        lambda: self.deps.summarizer.summarize(request.idea, paper),
+                    )
+
             async def summarize_all():
                 results = await asyncio.gather(
-                    *(
-                        trace_paper(
-                            PipelineStage.SUMMARIZED,
-                            p,
-                            lambda p=p: self.deps.summarizer.summarize(request.idea, p),
-                        )
-                        for p in final_papers
-                    ),
+                    *(summarize_one(p) for p in final_papers),
                     return_exceptions=True,
                 )
                 for value in results:

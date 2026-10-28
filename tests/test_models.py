@@ -26,8 +26,9 @@ class DomainModelTest(unittest.TestCase):
     def test_main_agent_contract_has_required_order(self):
         stages = [stage.value for stage in build_agent().contract().stages]
         self.assertLess(stages.index("retrieved"), stages.index("deduped"))
-        self.assertLess(stages.index("pre_ranked"), stages.index("fulltext_processed"))
-        self.assertLess(stages.index("verified"), stages.index("final_ranked"))
+        self.assertLess(stages.index("pre_ranked"), stages.index("downloaded"))
+        self.assertLess(stages.index("downloaded"), stages.index("markdown_converted"))
+        self.assertLess(stages.index("markdown_converted"), stages.index("final_ranked"))
 
 
 if __name__ == "__main__":

@@ -401,6 +401,27 @@ class RetrieverMappingTest(unittest.TestCase):
         self.assertIsNone(paper.open_access_url)
         self.assertFalse(paper.is_open_access)
 
+    def test_openalex_key_sent_in_header_not_query_parameters(self):
+        retriever = OpenAlexRetriever(api_key="fixture-openalex-key")
+        with mock.patch("paper_agent.adapters.openalex_retriever.http_get_json") as get:
+            get.return_value = {}
+            retriever._fetch("scientific paper", 5)
+        self.assertEqual(
+            get.call_args.kwargs["headers"],
+            {
+                "Authorization": "Bearer fixture-openalex-key",
+            },
+        )
+        self.assertNotIn("api_key", get.call_args.kwargs["params"])
+        self.assertNotIn("fixture-openalex-key", get.call_args.args[0])
+
+    def test_openalex_explicit_empty_key_keeps_anonymous_calls(self):
+        retriever = OpenAlexRetriever(api_key="")
+        with mock.patch("paper_agent.adapters.openalex_retriever.http_get_json") as get:
+            get.return_value = {}
+            retriever._fetch("scientific paper", 5)
+        self.assertNotIn("headers", get.call_args.kwargs)
+
     def test_openalex_empty_oa_url_becomes_none(self):
         retriever = OpenAlexRetriever()
         payload = {

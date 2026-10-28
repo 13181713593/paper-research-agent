@@ -1,7 +1,7 @@
 """OpenAlex retriever (Group 1, B side).
 
-Free REST API, no key. Polite pool: pass ``mailto`` when
-PAPER_AGENT_CONTACT_EMAIL is configured.
+基础调用可匿名；配置 OPENALEX_API_KEY 时使用免费账号额度。
+PAPER_AGENT_CONTACT_EMAIL 作为可选联系邮箱发送。
 
 The only data-transformation difficulty among our sources: OpenAlex returns
 abstracts as an inverted word-position index (``abstract_inverted_index``),
@@ -45,9 +45,16 @@ def _openalex_id_from_url(id_url: str | None) -> str | None:
 class OpenAlexRetriever:
     source_name = "openalex"
 
-    def __init__(self, contact_email: str | None = None, timeout: float = 30.0):
+    def __init__(
+        self,
+        contact_email: str | None = None,
+        timeout: float = 30.0,
+        *,
+        api_key: str | None = None,
+    ):
         self.contact_email = contact_email or os.getenv("PAPER_AGENT_CONTACT_EMAIL", "")
         self.timeout = timeout
+        self._api_key = (os.getenv("OPENALEX_API_KEY", "") if api_key is None else api_key).strip()
 
     async def search(self, plan: SearchPlan) -> list[Paper]:
         query = next((q for q in plan.queries if q.source == PaperSource.OPENALEX), None)
@@ -78,6 +85,13 @@ class OpenAlexRetriever:
             params["filter"] = ",".join(dates)
         if sort_by == "publication_date":
             params["sort"] = "publication_date:desc"
+        if self._api_key:
+            return http_get_json(
+                _API_URL,
+                params=params,
+                timeout=self.timeout,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+            )
         return http_get_json(_API_URL, params=params, timeout=self.timeout)
 
     def _to_papers(self, payload: Any) -> list[Paper]:

@@ -129,14 +129,35 @@ class DemoRanker:
 
 
 class DemoFullTextProcessor:
-    async def process(self, paper: Paper) -> Paper:
+    async def download(self, paper: Paper) -> Paper:
+        """演示组件：仅校验许可状态，不产生真实下载。"""
         if paper.fulltext.access_status != AccessStatus.OPEN_ACCESS:
             raise PermissionError("No legal open-access full text")
+        # 记录演示渠道，保证“论文下载”阶段能展示取得来源与本地文件。
+        paper.fulltext.local_pdf_path = str(Path("data/pdf") / f"{paper.paper_id}.pdf")
+        paper.fulltext.attempts.append(
+            {
+                "stage": "download",
+                "status": "succeeded",
+                "channel": "direct",
+                "url": paper.landing_page_url or "",
+                "reason": "演示下载器，未真实下载",
+            }
+        )
+        return paper
+
+    async def convert(self, paper: Paper) -> Paper:
         paper.fulltext.markdown_path = str(Path("data/markdown") / f"{paper.paper_id}.md")
         paper.fulltext.parser_name = "demo-parser"
         paper.fulltext.parser_version = "0.1"
         paper.fulltext.parse_quality = 0.9
+        paper.fulltext.attempts.append(
+            {"stage": "parse", "status": "succeeded", "reason": "演示解析器，未真实解析"}
+        )
         return paper
+
+    async def process(self, paper: Paper) -> Paper:
+        return await self.convert(await self.download(paper))
 
 
 class DemoVerifier:

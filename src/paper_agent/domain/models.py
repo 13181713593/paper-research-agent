@@ -74,6 +74,9 @@ class PipelineStage(StrEnum):
     RETRIEVED = "retrieved"
     DEDUPED = "deduped"
     PRE_RANKED = "pre_ranked"
+    DOWNLOADED = "downloaded"
+    MARKDOWN_CONVERTED = "markdown_converted"
+    # 历史记录：分段化之前的全文处理阶段，仅用于回放旧运行。
     FULLTEXT_PROCESSED = "fulltext_processed"
     VERIFIED = "verified"
     FINAL_RANKED = "final_ranked"
@@ -122,6 +125,7 @@ class FullTextAsset(StrictModel):
     parser_version: str | None = None
     parse_quality: Annotated[float | None, Field(ge=0, le=1)] = None
     parse_error: str | None = None
+    parse_warnings: list[str] = Field(default_factory=list)
     candidate_urls: list[HttpUrl] = Field(default_factory=list)
     attempts: list[dict[str, str]] = Field(default_factory=list)
 
@@ -294,9 +298,9 @@ class StageEvent(StrictModel):
 
 class PipelineRequest(StrictModel):
     idea: ResearchIdea
-    top_k: int = Field(default=5, ge=1, le=20)
+    top_k: int = Field(default=5, ge=1, le=100)
     candidate_limit_per_source: int = Field(default=30, ge=1, le=200)
-    pre_rank_pool_size: int = Field(default=20, ge=1, le=100)
+    pre_rank_pool_size: int = Field(default=20, ge=1, le=200)
     require_fulltext: bool = False
     allow_abstract_fallback: bool = True
 

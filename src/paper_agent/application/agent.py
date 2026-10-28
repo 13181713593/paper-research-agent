@@ -45,14 +45,18 @@ class PaperResearchAgent:
                 PipelineStage.RETRIEVED,
                 PipelineStage.DEDUPED,
                 PipelineStage.PRE_RANKED,
-                PipelineStage.FULLTEXT_PROCESSED,
-                PipelineStage.VERIFIED,
+                PipelineStage.DOWNLOADED,
+                PipelineStage.MARKDOWN_CONVERTED,
                 PipelineStage.FINAL_RANKED,
                 PipelineStage.SUMMARIZED,
                 PipelineStage.REPORTED,
             ],
             notes=[
                 "Pre-ranking selects a full-text candidate pool; it is not final Top-k.",
+                (
+                    "Full-text acquisition is split into PDF download and Markdown conversion; "
+                    "evidence verification is folded into final ranking."
+                ),
                 "Final ranking occurs only after full-text or explicit abstract fallback verification.",
             ],
         )

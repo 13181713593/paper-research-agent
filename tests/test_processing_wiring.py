@@ -115,7 +115,7 @@ class ProcessingWiringTest(unittest.TestCase):
         self.assertIn("抽取式降级", summary.relevance_to_idea)
         self.assertIn("A Study", report.markdown)
         self.assertIn("参考文献", report.markdown)
-        self.assertTrue(300 <= review_length(report.executive_summary) <= 500)
+        self.assertTrue(1000 <= review_length(report.executive_summary) <= 1500)
         self.assertEqual(report.paper_ids, [paper.paper_id])
         self.assertEqual(len(report.evidence), len(summary.evidence))
         self.assertTrue(report.future_directions)
@@ -228,12 +228,51 @@ def test_independent_workbench_loads_configuration_before_settings(tmp_path):
     )
 
 
+def test_local_mineru_configuration_precedes_legacy_empty_key(tmp_path, monkeypatch):
+    from paper_agent.bootstrap import build_processing_workbench
+    from paper_agent.config import load_local_env
+
+    for key in ("MINERU_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(key)
+    local = tmp_path / ".env"
+    local.write_text(
+        "PAPER_AGENT_MARKDOWN_BACKEND=mineru\nMINERU_API_KEY=fixture-mineru\n", "utf-8"
+    )
+    legacy = tmp_path / "legacy.env"
+    legacy.write_text(
+        "PAPER_AGENT_MARKDOWN_BACKEND=pypdf\nMINERU_API_KEY=\n"
+        "OPENAI_API_KEY=fixture-model\nPAPER_AGENT_LLM_MODEL=fixture-model\n",
+        "utf-8",
+    )
+    # 本地解析配置先加载，旧文件只补充缺失项，空 Key 不能挡住已配置的 MinerU。
+    load_local_env(local)
+    load_local_env(legacy)
+    settings = Settings.from_env()
+    assert settings.markdown_backend == "mineru"
+    assert settings.llm_model == "fixture-model"
+    assert os.environ["MINERU_API_KEY"] == "fixture-mineru"
+    components = build_processing_workbench(settings)._components_factory(None)
+    assert components.fulltext_processor._parser.parser_name == "mineru"
+    assert components.fulltext_processor._parser._extractor.available
+    assert components.summarizer._client is not None
+
+
 def test_explicit_empty_unpaywall_setting_does_not_fall_back_to_environment(monkeypatch):
     monkeypatch.setenv("UNPAYWALL_EMAIL", "fixture@example.invalid")
     components = build_processing_components(Settings(unpaywall_email=""))
     assert components.fulltext_processor._resolver._email == ""
     from_env = build_processing_components(Settings.from_env())
     assert from_env.fulltext_processor._resolver._email == "fixture@example.invalid"
+
+
+def test_openalex_key_is_wired_to_retrieval_and_resolution_only(monkeypatch):
+    monkeypatch.setenv("OPENALEX_API_KEY", "fixture-openalex-key")
+    settings = Settings(app_env="production")
+    deps = build_agent(settings)._pipeline.deps
+    retriever = next(r for r in deps.retrievers if isinstance(r, OpenAlexRetriever))
+    assert retriever._api_key == "fixture-openalex-key"
+    assert deps.fulltext_processor._resolver._openalex_api_key == "fixture-openalex-key"
+    assert "fixture-openalex-key" not in repr(settings)
 
 
 def test_mcp_entrypoint_import_and_contract(monkeypatch):

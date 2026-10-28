@@ -75,8 +75,8 @@ async def benchmark_pdf_parsing(
         seen.add(digest)
         paths.append(path)
         dataset.append({"paper_id": str(paper.paper_id), "title": paper.title, "sha256": digest})
-    if not 2 <= len(paths) <= 20:
-        raise ValueError("需要至少两份不同内容的本地 PDF，最多 20 份；请先完成论文下载。")
+    if not 2 <= len(paths) <= 100:
+        raise ValueError("需要至少两份不同内容的本地 PDF，最多 100 份；请先完成论文下载。")
     benchmark_dir = root / "benchmarks"
     benchmark_dir.mkdir(parents=True, exist_ok=True)
     measurements = []

@@ -185,7 +185,8 @@ def test_three_groups_end_to_end(production_fixture, source_fails, fulltext_fail
         "retrieved",
         "deduped",
         "pre_ranked",
-        "fulltext_processed",
+        "downloaded",
+        "markdown_converted",
         "verified",
         "final_ranked",
         "summarized",
@@ -207,7 +208,7 @@ def test_three_groups_end_to_end(production_fixture, source_fails, fulltext_fail
     assert summary.evidence and all(e.paper_id == paper.paper_id for e in summary.evidence)
     assert result.report.paper_ids == [paper.paper_id]
     assert "参考文献" in result.report.markdown
-    assert 300 <= len("".join(result.report.executive_summary.split())) <= 500
+    assert 1000 <= len("".join(result.report.executive_summary.split())) <= 1500
     assert any("source crossref failed" in warning for warning in result.warnings) == source_fails
     assert any("abstract fallback" in warning for warning in result.warnings) == fulltext_fails
     if fulltext_fails:
@@ -238,11 +239,18 @@ def test_production_ui_runs_real_offline_chain(production_fixture, monkeypatch, 
         assert not app.exception
         result = app.session_state["pipeline_result"]
         assert result.status == ProcessingStatus.PARTIAL  # 默认 Top-k=5，夹具只有一篇。
-        assert len(result.events) == 9 and result.report
+        assert len(result.events) == 10 and result.report
         assert result.summaries[0].generated_from_fulltext
+
+        def open_stage(name):
+            next(b for b in app.button if (b.key or "").endswith(f"_stage_{name}")).click().run()
+            assert not app.exception
+
+        open_stage("markdown_converted")
         assert any("可下载全文 1/1" in caption.value for caption in app.caption)
-        assert any("Jane Doe" in item.value for item in app.tabs[0].markdown)
-        assert len(app.get("download_button")) >= 5
+        open_stage("final_ranked")
+        assert any("Jane Doe" in item.value for item in app.markdown)
+        assert len(app.get("download_button")) >= 1
         pdf_response.assert_called_once()
     finally:
         st.cache_resource.clear()

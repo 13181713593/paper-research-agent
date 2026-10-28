@@ -3,7 +3,7 @@ import unittest
 
 import httpx
 
-from paper_agent.adapters.open_access_resolver import UnpaywallResolver
+from paper_agent.adapters.open_access_resolver import UnpaywallResolver, _PdfLinks
 from paper_agent.domain.errors import NoOpenAccessCopyError, ProviderUnavailableError
 from paper_agent.domain.models import AccessStatus, Paper
 
@@ -97,6 +97,46 @@ class OpenAccessResolverTest(unittest.TestCase):
         with self.assertRaises(NoOpenAccessCopyError):
             asyncio.run(resolver.resolve(paper))
         self.assertEqual(paper.fulltext.access_status, AccessStatus.UNAVAILABLE)
+
+
+def test_pdf_labels_and_embedded_pdf_are_found_but_citation_downloads_are_not():
+    parser = _PdfLinks("https://journal.example.org/article/141")
+    parser.feed("""
+        <a class="obj_galley_link" href="/article/view/141/62"><span>pdf</span></a>
+        <a href="/citations/bibtex">Download citation</a>
+        <a href="javascript:openPdf()">PDF</a>
+        <iframe src="/paper.pdf"></iframe>
+        <iframe src="/login"></iframe>
+        <object type="application/pdf" data="/download/141"></object>
+        <embed type="application/pdf" src="/content/141">
+    """)
+    assert parser.urls == [
+        "https://journal.example.org/paper.pdf",
+        "https://journal.example.org/download/141",
+        "https://journal.example.org/content/141",
+        "https://journal.example.org/article/view/141/62",
+    ]
+    assert parser.viewer_urls == ["https://journal.example.org/article/view/141/62"]
+
+
+def test_article_pdf_precedes_generic_attachments_and_journal_templates_are_excluded():
+    parser = _PdfLinks("https://journal.example.org/article")
+    parser.feed("""
+        <nav>
+          <a href="/files/ar.pdf">قالب المجلة بالعربية</a>
+          <a href="/files/en.pdf">Journal template PDF</a>
+          <a href="/settings/fr.pdf">Author guidelines</a>
+        </nav>
+        <a href="/attachment.pdf">Attachment</a>
+        <main><embed src="/researches/article.pdf" /></main>
+        <meta name="citation_pdf_url" content="/canonical.pdf">
+    """)
+    assert parser.urls == [
+        "https://journal.example.org/canonical.pdf",
+        "https://journal.example.org/researches/article.pdf",
+        "https://journal.example.org/attachment.pdf",
+    ]
+    assert parser.viewer_urls == []
 
 
 if __name__ == "__main__":

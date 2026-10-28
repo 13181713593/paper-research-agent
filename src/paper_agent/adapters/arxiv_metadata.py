@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
@@ -41,15 +42,19 @@ def _entry_id(entry: ET.Element) -> str | None:
 
 
 class ArxivMetadataEnricher:
-    """单次批量查询，按编号对齐响应；接口失败不妨碍后续全文处理。"""
+    """最多 100 篇分批串行查询，按编号对齐；失败批次不影响其他论文。"""
 
     def __init__(
         self,
         *,
         timeout_seconds: float = 15.0,
+        request_interval_seconds: float = 3.0,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        if request_interval_seconds < 0:
+            raise ValueError("元数据请求间隔不能小于零。")
         self._timeout = timeout_seconds
+        self._request_interval = request_interval_seconds
         self._transport = transport
 
     async def enrich(self, papers: list[Paper]) -> list[str]:
@@ -58,25 +63,34 @@ class ArxivMetadataEnricher:
         if not targets:
             return []
         identifiers = list(dict.fromkeys(p.arxiv_id for _, p in targets))
-        if len(identifiers) > 20 or any(not ARXIV_ID.fullmatch(i) for i in identifiers):
-            raise ValueError("元数据查询仅接受最多 20 个有效 arXiv 编号。")
-        try:
-            entries = await self._fetch(identifiers)
-        except (
-            httpx.HTTPError,
-            ET.ParseError,
-            DefusedXmlException,
-            ProviderUnavailableError,
-        ) as exc:
-            return [
-                (
-                    f"arXiv 基本信息获取失败（{type(exc).__name__}）；继续下载与总结，"
+        if len(identifiers) > 100 or any(not ARXIV_ID.fullmatch(i) for i in identifiers):
+            raise ValueError("元数据查询仅接受最多 100 个有效 arXiv 编号。")
+        entries = []
+        warnings = []
+        failed_ids = set()
+        # 每次查询最多 20 篇，批次间留出请求间隔，避免大批量触发无限并发。
+        for start in range(0, len(identifiers), 20):
+            batch = identifiers[start : start + 20]
+            if start:
+                await asyncio.sleep(self._request_interval)
+            try:
+                entries.extend(await self._fetch(batch))
+            except (
+                httpx.HTTPError,
+                ET.ParseError,
+                DefusedXmlException,
+                ProviderUnavailableError,
+            ) as exc:
+                failed_ids.update(batch)
+                warnings.append(
+                    f"arXiv 基本信息获取失败（第 {start // 20 + 1} 批，"
+                    f"{type(exc).__name__}）；继续下载与总结，"
                     "缺失字段不表示论文中没有这些信息。"
                 )
-            ]
-        warnings = []
         for index, paper in targets:
             requested = paper.arxiv_id
+            if requested in failed_ids:
+                continue
             candidates = [
                 (identifier, entry)
                 for identifier, entry in entries

@@ -24,13 +24,18 @@ from paper_agent.domain.models import (
     ResearchIdea,
     ResearchReport,
     SourceRecord,
+    StageEvent,
 )
 from paper_agent.ui.markdown_exports import (
+    embed_paper_images,
     evidence_audit,
     load_paper_markdown,
+    load_paper_pdf,
     markdown_filename,
+    paper_markdown_files,
     summary_to_markdown,
     zip_markdown_files,
+    zip_paper_pdfs,
 )
 
 APP = Path(__file__).resolve().parents[1] / "src/paper_agent/ui/app.py"
@@ -78,12 +83,36 @@ def summary(paper):
 
 @pytest.fixture
 def result(paper, summary):
+    from datetime import UTC, datetime
+
+    stages = [
+        PipelineStage.QUERY_PLANNED,
+        PipelineStage.RETRIEVED,
+        PipelineStage.DEDUPED,
+        PipelineStage.PRE_RANKED,
+        PipelineStage.DOWNLOADED,
+        PipelineStage.MARKDOWN_CONVERTED,
+        PipelineStage.FINAL_RANKED,
+        PipelineStage.SUMMARIZED,
+        PipelineStage.REPORTED,
+    ]
     return PipelineResult(
         status=ProcessingStatus.SUCCEEDED,
         stage=PipelineStage.REPORTED,
         request=PipelineRequest(idea=ResearchIdea(text="验证论文下载和总结生成的完整过程")),
         papers=[paper],
         summaries=[summary],
+        events=[
+            StageEvent(
+                stage=stage,
+                scope="stage",
+                status=ProcessingStatus.SUCCEEDED,
+                started_at=datetime.now(UTC),
+                input_count=1,
+                output_count=1,
+            )
+            for stage in stages
+        ],
         report=ResearchReport(
             title="综合论文总结",
             executive_summary="测试概述",
@@ -222,6 +251,14 @@ def download_calls(download, label):
     return [call for call in download.call_args_list if call.args[0] == label]
 
 
+def open_stage(app, stage):
+    """展开一个流水线阶段：下载与预览随阶段渲染，不再集中在页面末尾。"""
+    button = next(b for b in app.button if (b.key or "").endswith(f"_stage_{stage}"))
+    button.click().run()
+    assert not app.exception
+    return app
+
+
 def test_ui_generates_three_download_types_without_regeneration(ui, result):
     app, agent, download = ui
     app.run()
@@ -230,27 +267,23 @@ def test_ui_generates_three_download_types_without_regeneration(ui, result):
     assert not download.called
     app.button[0].click().run()
     assert not app.exception
-    assert [tab.label for tab in app.tabs] == [
-        "Top-k 论文",
-        "论文 Markdown",
-        "单篇总结",
-        "综合报告",
-        "性能对比",
-        "运行审计",
-        "全部文献元数据",
-    ]
+    # 结果页只保留阶段导航，下载与预览随阶段展开。
+    assert not app.tabs
+    open_stage(app, "markdown_converted")
     paper_call = download_calls(download, "下载论文全文 Markdown")[0]
     assert paper_call.args[1] == FULLTEXT
     assert paper_call.kwargs["mime"] == "text/markdown"
     assert not paper_call.kwargs["disabled"]
-    summary_call = download_calls(download, "下载单篇总结 Markdown")[0]
-    assert "如何提供可追溯的论文总结" in summary_call.args[1]
-    report_call = download_calls(download, "下载综合报告 Markdown")[0]
-    assert report_call.args[1] == result.report.markdown
     bundle = download_calls(download, "一键下载全部 Markdown（ZIP）")[0]
     with ZipFile(BytesIO(bundle.args[1])) as archive:
         assert len(archive.namelist()) == 3
         assert archive.read("research_report.md").decode("utf-8") == result.report.markdown
+    open_stage(app, "summarized")
+    summary_call = download_calls(download, "下载单篇总结 Markdown")[0]
+    assert "如何提供可追溯的论文总结" in summary_call.args[1]
+    open_stage(app, "reported")
+    report_call = download_calls(download, "下载综合报告 Markdown")[0]
+    assert report_call.args[1] == result.report.markdown
     # 下载触发的界面重跑只读取会话内已有结果，不重复检索或调用 LLM。
     app.run()
     assert not app.exception
@@ -292,13 +325,17 @@ def test_ui_missing_fulltext_keeps_summary_and_report_downloads(ui, result):
     result.summaries[0].generated_from_fulltext = False
     app.run().button[0].click().run()
     assert not app.exception
-    assert download_calls(download, "下载论文全文 Markdown")[0].kwargs["disabled"]
-    summary_call = download_calls(download, "下载单篇总结 Markdown")[0]
-    assert "仅基于摘要降级生成" in summary_call.args[1]
+    open_stage(app, "markdown_converted")
+    # 没有 Markdown 的论文只列原因，不生成可点击的下载按钮。
+    assert not download_calls(download, "下载论文全文 Markdown")
+    assert any("未生成 Markdown 的论文" in e.label for e in app.expander)
     bundle = download_calls(download, "一键下载全部 Markdown（ZIP）")[0]
     with ZipFile(BytesIO(bundle.args[1])) as archive:
         assert len(archive.namelist()) == 2
         assert not any(name.startswith("papers/") for name in archive.namelist())
+    open_stage(app, "summarized")
+    summary_call = download_calls(download, "下载单篇总结 Markdown")[0]
+    assert "仅基于摘要降级生成" in summary_call.args[1]
 
 
 def test_ui_failed_result_has_no_fake_downloads(ui, result):
@@ -310,9 +347,12 @@ def test_ui_failed_result_has_no_fake_downloads(ui, result):
     result.stage = PipelineStage.FAILED
     app.run().button[0].click().run()
     assert not app.exception
+    open_stage(app, "markdown_converted")
     assert download_calls(download, "一键下载全部 Markdown（ZIP）")[0].kwargs["disabled"]
     assert not download_calls(download, "下载论文全文 Markdown")
+    open_stage(app, "summarized")
     assert not download_calls(download, "下载单篇总结 Markdown")
+    open_stage(app, "reported")
     assert not download_calls(download, "下载综合报告 Markdown")
 
 
@@ -326,6 +366,7 @@ def test_ui_same_title_papers_get_unique_download_keys(ui, result):
     result.summaries.append(second_summary)
     app.run().button[0].click().run()
     assert not app.exception
+    open_stage(app, "markdown_converted")
     paper_calls = download_calls(download, "下载论文全文 Markdown")
     assert len(paper_calls) == 2
     assert len({call.kwargs["key"] for call in paper_calls}) == 2
@@ -347,6 +388,7 @@ def test_ui_new_run_replaces_previous_downloads(ui, result):
     app.button[0].click().run()
     assert not app.exception
     assert agent.research.await_count == 2
+    open_stage(app, "markdown_converted")
     assert not download_calls(download, "下载论文全文 Markdown")
     assert download_calls(download, "一键下载全部 Markdown（ZIP）")[0].kwargs["disabled"]
 
@@ -404,16 +446,18 @@ def test_ui_workbench_does_not_invoke_retrieval(ui, result):
     assert not app.exception
     assert not agent.research.called
     assert workbench.run.await_count == 1
-    assert app.tabs[0].label == "输入论文（未排序）"
+    assert not app.tabs
+    open_stage(app, "final_ranked")
     assert not app.get("json")
-    columns = app.tabs[0].dataframe[0].value.columns
+    columns = app.dataframe[0].value.columns
     assert "最终分数" not in columns and "代码状态" not in columns
-    text = "\n".join(item.value for item in app.tabs[0].markdown)
+    text = "\n".join(item.value for item in app.markdown)
     assert "测试作者" in text and paper.abstract in text
     assert "**来源**：arXiv" in text
     assert "arXiv 未提供机构字段" in text
     assert "**解析完整度**：0.00" in text
     assert len(app.get("link_button")) == 1
+    open_stage(app, "markdown_converted")
     assert download_calls(download, "下载论文全文 Markdown")
     assert download_calls(download, "下载逐篇处理记录 JSON")
 
@@ -424,7 +468,8 @@ def test_ui_missing_metadata_is_not_claimed_absent(ui, result):
     result.papers[0].abstract = None
     app.run().button[0].click().run()
     assert not app.exception
-    text = "\n".join(item.value for item in app.tabs[0].markdown)
+    open_stage(app, "final_ranked")
+    text = "\n".join(item.value for item in app.markdown)
     assert "本次未获取" in text
     assert "无摘要" not in text
     assert "未评估" in text
@@ -436,11 +481,12 @@ def test_ui_full_pipeline_keeps_populated_ranking_fields(ui, result):
     result.papers[0].scores.lexical = 0.5
     app.run().button[0].click().run()
     assert not app.exception
+    open_stage(app, "final_ranked")
     scores = app.get("json")
     assert len(scores) == 1
     assert "lexical" in scores[0].value
     assert "semantic" not in scores[0].value
-    assert "最终分数" in app.tabs[0].dataframe[0].value.columns
+    assert "最终分数（满分2）" in app.dataframe[0].value.columns
 
 
 def test_ui_workbench_bad_input_does_not_start_processing(ui):
@@ -453,6 +499,184 @@ def test_ui_workbench_bad_input_does_not_start_processing(ui):
     assert not agent.research.called
     assert app.error
     assert not app.exception
+
+
+def test_pdf_download_is_safe_and_independent_of_markdown(paper, tmp_path):
+    path = tmp_path / "fulltext/paper.pdf"
+    content = b"%PDF-1.4 public paper"
+    path.write_bytes(content)
+    paper.fulltext.local_pdf_path = str(path)
+    paper.fulltext.markdown_path = None
+    assert load_paper_pdf(paper, tmp_path) == content
+    path.write_bytes(b"not a PDF")
+    assert load_paper_pdf(paper, tmp_path) is None
+    path.write_bytes(content)
+    assert load_paper_pdf(paper, tmp_path / "other") is None
+    with mock.patch("paper_agent.ui.markdown_exports.MAX_PDF_BYTES", 4):
+        assert load_paper_pdf(paper, tmp_path) is None
+    with ZipFile(BytesIO(zip_paper_pdfs([paper], tmp_path))) as archive:
+        assert len(archive.namelist()) == 1
+        assert archive.read(archive.namelist()[0]) == content
+
+
+def test_markdown_bundle_and_preview_keep_images(paper, tmp_path):
+    path = Path(paper.fulltext.markdown_path)
+    image = path.parent / "paper_assets/images/fig.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"test-image")
+    markdown = FULLTEXT + "\n![figure](paper_assets/images/fig.png)\n$$x+y$$\n"
+    path.write_text(markdown, encoding="utf-8")
+    embedded = embed_paper_images(paper, tmp_path, markdown)
+    assert "data:image/png;base64,dGVzdC1pbWFnZQ==" in embedded
+    assert "$$x+y$$" in embedded
+    files = paper_markdown_files(paper, tmp_path)
+    with ZipFile(BytesIO(zip_markdown_files(files))) as archive:
+        assert archive.read("paper_assets/images/fig.png") == b"test-image"
+        document = next(name for name in archive.namelist() if name.endswith(".md"))
+        assert "paper_assets/images/fig.png" in archive.read(document).decode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "../private.png",
+        "../../private.png",
+        "https://example.org/private.png",
+        "file:///private.png",
+        "paper_assets/images/missing.png",
+        "paper_assets/images/%2e%2e/private.png",
+    ],
+)
+def test_image_references_cannot_read_unrelated_files(paper, tmp_path, url):
+    private = tmp_path / "private.png"
+    private.write_bytes(b"private-content")
+    markdown = f"![figure]({url})"
+    Path(paper.fulltext.markdown_path).write_text(markdown)
+    assert "private-content" not in embed_paper_images(paper, tmp_path, markdown)
+    assert "图片不可用" in embed_paper_images(paper, tmp_path, markdown)
+    assert all(
+        isinstance(content, str) for content in paper_markdown_files(paper, tmp_path).values()
+    )
+
+
+def test_image_symlinks_cannot_escape_asset_directory(paper, tmp_path):
+    path = Path(paper.fulltext.markdown_path)
+    asset = path.parent / "paper_assets/linked.png"
+    asset.parent.mkdir()
+    private = tmp_path / "private.png"
+    private.write_bytes(b"private")
+    asset.symlink_to(private)
+    assert "图片不可用" in embed_paper_images(paper, tmp_path, "![figure](paper_assets/linked.png)")
+
+
+def test_archive_limits_and_unsafe_entry_names_are_rejected():
+    with pytest.raises(ValueError, match="不安全"):
+        zip_markdown_files({"../paper.md": "content"})
+    with (
+        mock.patch("paper_agent.ui.markdown_exports.MAX_BUNDLE_BYTES", 4),
+        pytest.raises(ValueError, match="总大小"),
+    ):
+        zip_markdown_files({"paper.md": "too large"})
+
+
+def test_ui_pdf_download_stays_available_after_parse_failure(ui, result, tmp_path):
+    app, agent, download = ui
+    pdf = tmp_path / "paper.pdf"
+    content = b"%PDF-1.4 public-paper"
+    pdf.write_bytes(content)
+    result.papers[0].fulltext.local_pdf_path = str(pdf)
+    result.papers[0].fulltext.markdown_path = None
+    app.run().button[0].click().run()
+    assert not app.exception
+    open_stage(app, "final_ranked")
+    call = download_calls(download, "下载论文原始 PDF")[0]
+    assert call.args[1] == content and not call.kwargs["disabled"]
+    open_stage(app, "markdown_converted")
+    assert not download_calls(download, "下载论文全文 Markdown")
+    assert any("未生成 Markdown 的论文" in e.label for e in app.expander)
+    open_stage(app, "downloaded")
+    button = next(button for button in app.button if button.label == "准备批量 PDF 下载")
+    button.click().run()
+    assert not app.exception
+    bundle = download_calls(download, "一键下载全部论文 PDF（ZIP）")[-1]
+    with ZipFile(BytesIO(bundle.args[1])) as archive:
+        assert archive.read(archive.namelist()[0]) == content
+    assert agent.research.await_count == 1
+
+
+def test_ui_candidate_pdfs_are_not_lost_after_top_k_selection(ui, result, tmp_path):
+    app, _, download = ui
+    candidate = Paper(title="未进入 Top-k 的候选论文")
+    pdf = tmp_path / "candidate.pdf"
+    pdf.write_bytes(b"%PDF-1.4 candidate")
+    candidate.fulltext.local_pdf_path = str(pdf)
+    result.metadata_papers = [*result.papers, candidate]
+    app.run().button[0].click().run()
+    assert not app.exception
+    open_stage(app, "downloaded")
+    assert download_calls(download, f"下载 PDF：{candidate.title}")
+    next(b for b in app.button if b.label == "准备批量 PDF 下载").click().run()
+    bundle = download_calls(download, "一键下载全部论文 PDF（ZIP）")[-1]
+    with ZipFile(BytesIO(bundle.args[1])) as archive:
+        assert any(str(candidate.paper_id) in name for name in archive.namelist())
+
+
+@pytest.mark.parametrize(
+    "configured,key_available,expected",
+    [
+        ("auto", True, "mineru"),
+        ("auto", False, "auto"),
+        ("mineru", True, "mineru"),
+        ("mineru", False, "mineru"),
+        ("pypdf", True, "pypdf"),
+    ],
+)
+def test_workbench_default_backend_matches_configuration(
+    ui, monkeypatch, configured, key_available, expected
+):
+    app, agent, _ = ui
+    monkeypatch.setenv("PAPER_AGENT_MARKDOWN_BACKEND", configured)
+    monkeypatch.setenv("MINERU_API_KEY", "test-token" if key_available else "")
+    with mock.patch("paper_agent.ui.workbench.build_processing_workbench") as builder:
+        app.run().radio[0].set_value("第三组独立演示").run()
+        assert not app.exception
+        assert app.selectbox(key="workbench_backend").value == expected
+        assert app.button[0].disabled == (expected == "mineru" and not key_available)
+        if expected == "mineru" and not key_available:
+            assert any("MINERU_API_KEY" in warning.value for warning in app.warning)
+        if expected == "auto" and not key_available:
+            assert any("当前将使用本地 pypdf" in warning.value for warning in app.warning)
+        assert not builder.called
+    assert not agent.research.called
+
+
+def test_workbench_preserves_manual_backend_until_configuration_changes(ui, monkeypatch):
+    app, agent, _ = ui
+    monkeypatch.setenv("MINERU_API_KEY", "test-token")
+    monkeypatch.setenv("PAPER_AGENT_MARKDOWN_BACKEND", "auto")
+    app.run().radio[0].set_value("第三组独立演示").run()
+    assert app.selectbox(key="workbench_backend").value == "mineru"
+    app.selectbox(key="workbench_backend").set_value("pypdf").run()
+    app.run()
+    assert not app.exception
+    assert app.selectbox(key="workbench_backend").value == "pypdf"
+    monkeypatch.setenv("PAPER_AGENT_MARKDOWN_BACKEND", "pypdf")
+    app.run()
+    monkeypatch.setenv("PAPER_AGENT_MARKDOWN_BACKEND", "mineru")
+    app.run()
+    assert not app.exception
+    assert app.selectbox(key="workbench_backend").value == "mineru"
+    assert not agent.research.called
+
+
+def test_workbench_requires_key_for_selected_formula_backend(ui):
+    app, agent, _ = ui
+    app.run().radio[0].set_value("第三组独立演示").run()
+    app.selectbox(key="workbench_backend").set_value("mineru").run()
+    assert not app.exception
+    assert app.button[0].disabled
+    assert not agent.research.called
+    assert any("MINERU_API_KEY" in warning.value for warning in app.warning)
 
 
 def test_ui_benchmark_renders_and_joins_download_bundle(ui, result):
@@ -482,6 +706,7 @@ def test_ui_benchmark_renders_and_joins_download_bundle(ui, result):
         "paper_agent.ui.workbench.benchmark_pdf_parsing", new=mock.AsyncMock(return_value=report)
     ) as benchmark:
         app.run().button[0].click().run()
+        open_stage(app, "markdown_converted")
         button = next(button for button in app.button if button.label == "运行串行 / 并行对照")
         button.click().run()
     assert not app.exception

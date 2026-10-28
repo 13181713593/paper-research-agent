@@ -21,6 +21,7 @@ def isolated_runtime(tmp_path, monkeypatch, request):
                 "OPENAI_API_KEY",
                 "MINERU_API_KEY",
                 "SEMANTIC_SCHOLAR_API_KEY",
+                "OPENALEX_API_KEY",
                 "UNPAYWALL_EMAIL",
                 "CROSSREF_MAILTO",
             }:

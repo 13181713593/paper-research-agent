@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import asdict
+import os
+from dataclasses import asdict, replace
 
 import streamlit as st
 
@@ -12,7 +13,11 @@ from paper_agent.application.processing_benchmark import (
     benchmark_pdf_parsing,
     benchmark_to_markdown,
 )
-from paper_agent.application.processing_workbench import papers_from_arxiv_ids
+from paper_agent.application.processing_workbench import (
+    MAX_BATCH_PAPERS,
+    MAX_WORKBENCH_CONCURRENCY,
+    papers_from_arxiv_ids,
+)
 from paper_agent.bootstrap import build_processing_workbench
 from paper_agent.config import Settings
 from paper_agent.domain.models import PipelineResult, ResearchIdea
@@ -29,9 +34,43 @@ def render_workbench(settings: Settings, idea: str) -> None:
             "arXiv 论文编号（每行一个）",
             "1706.03762\n1409.0473",
             key="workbench_ids",
-            help="预填两篇真实公开论文，可换成你的论文编号；最多 20 篇。",
+            help=f"预填两篇真实公开论文，可换成你的论文编号；最多 {MAX_BATCH_PAPERS} 篇。",
         )
-        concurrency = st.number_input("下载与总结并发上限", 1, 8, 4, key="workbench_concurrency")
+        concurrency = st.number_input(
+            "下载与总结并发上限",
+            1,
+            MAX_WORKBENCH_CONCURRENCY,
+            min(settings.max_concurrency, MAX_WORKBENCH_CONCURRENCY),
+            key="workbench_concurrency",
+        )
+        backends = ["mineru", "auto", "pypdf"]
+        mineru_available = bool((os.getenv("MINERU_API_KEY") or "").strip())
+        default_backend = settings.markdown_backend
+        if default_backend == "auto" and mineru_available:
+            default_backend = "mineru"
+        # 配置变化时更新默认值，清除旧会话残留的后端；普通重跑保留用户的手动选择。
+        if st.session_state.get("workbench_backend_default") != default_backend:
+            st.session_state["workbench_backend"] = default_backend
+            st.session_state["workbench_backend_default"] = default_backend
+        backend = st.selectbox(
+            "PDF 解析后端",
+            backends,
+            index=backends.index(default_backend),
+            help=(
+                "推荐 MinerU：识别公式、表格和版面，需要 MINERU_API_KEY；"
+                "pypdf 为本地文本提取。auto 仅在没有 Key 时使用 pypdf。"
+            ),
+            key="workbench_backend",
+        )
+        backend_missing = backend == "mineru" and not mineru_available
+        if backend_missing:
+            st.warning("MinerU 公式识别需要在本地配置 MINERU_API_KEY，当前不能启动此后端。")
+        elif backend == "mineru" or (backend == "auto" and mineru_available):
+            st.caption("将上传论文到 MinerU 识别公式、表格和版面，保留 LaTeX 和图片资源。")
+        else:
+            if backend == "auto":
+                st.warning("auto 未检测到 MINERU_API_KEY，当前将使用本地 pypdf。")
+            st.info("本地 pypdf 可恢复文本段落并提取嵌入图片，不能可靠识别公式和矢量图。")
         st.caption(
             "进度日志按完成先后显示；已处理数量包含成功、失败和跳过，"
             "“第几篇”是输入序号。最终论文和总结仍按输入顺序展示。"
@@ -40,14 +79,17 @@ def render_workbench(settings: Settings, idea: str) -> None:
             "该入口始终使用真实处理组件。配置总结 API 后会发送论文材料；未配置则使用抽取式总结。"
         )
         if (
-            st.button("处理论文并生成报告", type="primary", disabled=not idea.strip())
+            st.button(
+                "处理论文并生成报告", type="primary", disabled=not idea.strip() or backend_missing
+            )
             and idea.strip()
+            and not backend_missing
         ):
             try:
                 papers = papers_from_arxiv_ids(ids)
                 with st.status("第三组正在处理真实论文……", expanded=True) as status:
                     run = asyncio.run(
-                        build_processing_workbench(settings).run(
+                        build_processing_workbench(replace(settings, markdown_backend=backend)).run(
                             ResearchIdea(text=idea),
                             papers,
                             concurrency=concurrency,
@@ -119,7 +161,7 @@ def render_benchmark(result: PipelineResult, settings: Settings) -> None:
     st.caption(
         "用本批已下载的 PDF 实测解析阶段：相同样本、相同 pypdf 后端、"
         "每轮全新解析目录、交替顺序各跑两次，计入进程启动开销。"
-        "不重新下载、不调用 LLM 或 MinerU。"
+        "支持最多 100 份不同内容的 PDF；不重新下载、不调用 LLM 或 MinerU。"
     )
     count = sum(bool(paper.fulltext.local_pdf_path) for paper in result.papers)
     workers = st.number_input("对照实验并行进程数", 2, 8, 4, key="benchmark_workers")
