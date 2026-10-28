@@ -21,6 +21,7 @@ from .arxiv_retriever import (
 )
 from .bibtex_mapper import BibTexMapper, BibTexMappingError
 from .demo import build_demo_dependencies
+from .openreview_retriever import OpenReviewRetriever
 from .paper_merger import PaperMerger
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ __all__ = [
     "ArxivTimeoutError",
     "BibTexMapper",
     "BibTexMappingError",
+    "OpenReviewRetriever",
     "PaperMerger",
     "ProcessingComponents",
     "build_demo_dependencies",

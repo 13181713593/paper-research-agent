@@ -13,6 +13,18 @@ def paper_snapshot(paper: Paper) -> dict:
         "paper_id": str(paper.paper_id),
         "title": paper.title,
         "authors": [author.name for author in paper.authors],
+        "institutions": list(
+            dict.fromkeys(
+                [*paper.institutions, *(i for a in paper.authors for i in a.affiliations)]
+            )
+        ),
+        "author_affiliations": [
+            {"name": a.name, "affiliations": a.affiliations} for a in paper.authors
+        ],
+        "citation_count": paper.citation_count,
+        "metadata_retrieved_at": max(
+            (r.retrieved_at.isoformat() for r in paper.source_records), default=None
+        ),
         "year": paper.year,
         "venue": paper.venue.name if paper.venue else None,
         "doi": paper.doi,

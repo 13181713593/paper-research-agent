@@ -24,7 +24,7 @@ from paper_agent.domain.models import Author, Paper, PaperSource, SearchPlan, So
 
 _API_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 _FIELDS = (
-    "paperId,title,abstract,year,publicationDate,authors,venue,"
+    "paperId,title,abstract,year,publicationDate,authors,venue,publicationVenue,journal,"
     "externalIds,citationCount,openAccessPdf"
 )
 
@@ -64,15 +64,13 @@ class SemanticScholarRetriever:
             params["publicationDateOrYear"] = (
                 f"{(filters or {}).get('date_from') or ''}:{(filters or {}).get('date_to') or ''}"
             )
-        url = _API_URL
         if sort_by == "publication_date":
-            url += "/bulk"
-            params.pop("limit", None)  # Bulk uses fixed server batches; take only our quota below.
+            # `/paper/search` truncates server-side to `limit`; the bulk endpoint
+            # ignores `limit` and returns a fixed batch (up to 1000), which would
+            # over-fetch a small quota by an order of magnitude.
             params["sort"] = "publicationDate:desc"
-            terms = sanitize_query(raw_query).replace('"', "")
-            params["query"] = f'"{terms}"'
-        payload = http_get_json(
-            url,
+        return http_get_json(
+            _API_URL,
             params=params,
             headers=headers,
             timeout=self.timeout,
@@ -80,9 +78,6 @@ class SemanticScholarRetriever:
             initial_backoff=1.0,
             max_retry_after=5.0,
         )
-        if sort_by == "publication_date" and isinstance(payload, dict):
-            payload = {**payload, "data": payload.get("data", [])[:limit]}
-        return payload
 
     def _to_papers(self, payload: Any) -> list[Paper]:
         if not payload:
@@ -99,7 +94,16 @@ class SemanticScholarRetriever:
         if not title:
             return None
 
-        authors = [Author(name=a.get("name")) for a in item.get("authors", []) if a.get("name")]
+        authors = [
+            Author(
+                name=a["name"],
+                affiliations=[
+                    s for s in a.get("affiliations") or [] if isinstance(s, str) and s.strip()
+                ],
+            )
+            for a in item.get("authors") or []
+            if a.get("name")
+        ]
         publication_date = parse_date(item.get("publicationDate"))
         year = item.get("year")
         if publication_date:
@@ -109,7 +113,11 @@ class SemanticScholarRetriever:
         doi = normalize_doi(external.get("DOI"))
         arxiv_id = external.get("ArXiv")
         paper_id = item.get("paperId")
-        venue_name = (item.get("venue") or "").strip() or None
+        publication_venue = item.get("publicationVenue") or {}
+        journal = item.get("journal") or {}
+        venue_name = (
+            publication_venue.get("name") or item.get("venue") or journal.get("name") or ""
+        ).strip() or None
         # Some records carry openAccessPdf with an empty url: contract says
         # unknown/empty scalars become None, never "" (URL validation would fail).
         open_access_pdf = (item.get("openAccessPdf") or {}).get("url") or None
@@ -128,6 +136,7 @@ class SemanticScholarRetriever:
         return Paper(
             title=title,
             authors=authors,
+            institutions=list(dict.fromkeys(i for a in authors for i in a.affiliations)),
             publication_date=publication_date,
             year=year,
             abstract=(item.get("abstract") or None),
@@ -135,7 +144,14 @@ class SemanticScholarRetriever:
             doi=doi,
             pmid=external.get("PubMed"),
             semantic_scholar_id=paper_id,
-            venue=Venue(name=venue_name) if venue_name else None,
+            venue=Venue(
+                name=venue_name,
+                venue_type=publication_venue.get("type"),
+                volume=journal.get("volume"),
+                pages=journal.get("pages"),
+            )
+            if venue_name
+            else None,
             citation_count=item.get("citationCount"),
             is_open_access=bool(open_access_pdf),
             open_access_url=open_access_pdf,
@@ -145,7 +161,7 @@ class SemanticScholarRetriever:
                 SourceRecord(
                     source=PaperSource.SEMANTIC_SCHOLAR,
                     source_id=paper_id or doi or title,
-                    raw_metadata={},
+                    raw_metadata={"citation_count": item.get("citationCount")},
                 )
             ],
         )

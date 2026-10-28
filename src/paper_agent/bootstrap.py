@@ -16,6 +16,7 @@ from paper_agent.adapters.crossref_retriever import CrossrefRetriever
 from paper_agent.adapters.europepmc_retriever import EuropePmcRetriever
 from paper_agent.adapters.llm_concept_extractor import LLMConceptExtractor
 from paper_agent.adapters.openalex_retriever import OpenAlexRetriever
+from paper_agent.adapters.openreview_retriever import OpenReviewRetriever
 from paper_agent.adapters.paper_merger import PaperMerger
 from paper_agent.adapters.query_planner import HeuristicQueryPlanner
 from paper_agent.adapters.semantic_scholar_retriever import SemanticScholarRetriever
@@ -25,7 +26,7 @@ from paper_agent.config import Settings, load_local_env
 
 
 def build_retrieval_dependencies(settings: Settings | None = None) -> PipelineDependencies:
-    """第一组五源检索与去重；其他阶段保留演示组件供单组联调。"""
+    """第一组多源检索与去重；其他阶段保留演示组件供单组联调。"""
     settings = settings or Settings.from_env()
     extractor = LLMConceptExtractor(
         base_url=settings.llm_base_url,
@@ -37,10 +38,11 @@ def build_retrieval_dependencies(settings: Settings | None = None) -> PipelineDe
         query_planner=HeuristicQueryPlanner(concept_extractor=extractor, expand_queries=True),
         retrievers=[
             ArxivRetriever(config=ArxivSearchConfig(max_retries=2)),
-            CrossrefRetriever(),
-            OpenAlexRetriever(),
-            SemanticScholarRetriever(),
-            EuropePmcRetriever(),
+            CrossrefRetriever(timeout=settings.request_timeout_seconds),
+            OpenAlexRetriever(timeout=settings.request_timeout_seconds),
+            SemanticScholarRetriever(timeout=settings.request_timeout_seconds),
+            EuropePmcRetriever(timeout=settings.request_timeout_seconds),
+            OpenReviewRetriever(timeout=settings.request_timeout_seconds),
         ],
         merger=PaperMerger(),
     )
@@ -73,7 +75,11 @@ def build_agent(settings: Settings | None = None) -> PaperResearchAgent:
         deps.fulltext_processor = components.fulltext_processor
         deps.summarizer = components.summarizer
         deps.report_writer = components.report_writer
-    pipeline = ResearchPipeline(deps, max_concurrency=settings.max_concurrency)
+    pipeline = ResearchPipeline(
+        deps,
+        max_concurrency=settings.max_concurrency,
+        source_timeout_seconds=settings.source_timeout_seconds,
+    )
     return PaperResearchAgent(pipeline)
 
 

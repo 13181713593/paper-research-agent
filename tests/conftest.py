@@ -7,6 +7,21 @@ import pytest
 import requests
 
 
+@pytest.fixture
+def finish_ui_research():
+    """Await the background worker instead of assuming it finishes in 150ms."""
+
+    def finish(app):
+        if "research_job" in app.session_state:
+            job = app.session_state["research_job"]
+            job._thread.join(timeout=15)
+            assert job.snapshot()[3], "Offline research worker did not finish"
+            app.run()
+        return app
+
+    return finish
+
+
 @pytest.fixture(autouse=True)
 def isolated_runtime(tmp_path, monkeypatch, request):
     # 付费冒烟仍须独立设置开关并显式注入凭证，不自动读取开发者 .env。

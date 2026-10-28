@@ -61,11 +61,23 @@ class PaperMerger:
         right_arxiv = normalize_arxiv(right.arxiv_id, strip_version=True)
         if left_arxiv and right_arxiv:
             return left_arxiv == right_arxiv
-        # An unmatched DOI is a strong boundary for title-only matching.
-        if left_doi or right_doi:
-            return False
-        if left_arxiv or right_arxiv:
-            return False
+        # A lone DOI or arXiv id is a strong boundary for a bare title match,
+        # EXCEPT when the two records carry different identifier namespaces
+        # (arXiv preprint vs DOI publication): those namespaces cannot be
+        # compared directly, so title+author+year is the only cross-source
+        # signal available and must be allowed to merge the two records.
+        left_only_arxiv = bool(left_arxiv) and not left_doi
+        right_only_doi = bool(right_doi) and not right_arxiv
+        left_only_doi = bool(left_doi) and not left_arxiv
+        right_only_arxiv = bool(right_arxiv) and not right_doi
+        cross_namespace = (left_only_arxiv and right_only_doi) or (
+            left_only_doi and right_only_arxiv
+        )
+        if not cross_namespace:
+            if left_doi or right_doi:
+                return False
+            if left_arxiv or right_arxiv:
+                return False
         for field in ("pmid", "openalex_id", "semantic_scholar_id"):
             left_id, right_id = getattr(left, field), getattr(right, field)
             if left_id and right_id and left_id != right_id:

@@ -36,13 +36,14 @@ def test_query_table_distinguishes_empty_matches_and_actual_request_errors():
     assert query_result_row(timed_out)["说明"] == timed_out["error"]
 
 
-def test_page_displays_all_stage_results_and_retains_them_on_rerun(monkeypatch):
+def test_page_displays_all_stage_results_and_retains_them_on_rerun(monkeypatch, finish_ui_research):
     agent = PaperResearchAgent(ResearchPipeline(build_demo_dependencies()))
     monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda: agent)
     st.cache_resource.clear()
     app = AppTest.from_file(str(APP), default_timeout=30).run()
     assert not app.exception
     app.button[0].click().run()
+    finish_ui_research(app)
     assert not app.exception
     result = app.session_state["pipeline_result"]
     assert any(e.scope == "source" for e in result.progress_events)
@@ -68,7 +69,9 @@ def test_page_displays_all_stage_results_and_retains_them_on_rerun(monkeypatch):
     st.cache_resource.clear()
 
 
-def test_failed_page_keeps_successful_source_papers_and_shows_errors(monkeypatch):
+def test_failed_page_keeps_successful_source_papers_and_shows_errors(
+    monkeypatch, finish_ui_research
+):
     class BrokenRanker:
         async def rank(self, idea, papers, limit):
             raise ValueError("ranking failed in UI fixture")
@@ -81,6 +84,7 @@ def test_failed_page_keeps_successful_source_papers_and_shows_errors(monkeypatch
     st.cache_resource.clear()
     app = AppTest.from_file(str(APP), default_timeout=30).run()
     app.button[0].click().run()
+    finish_ui_research(app)
     assert not app.exception
     assert app.session_state["pipeline_result"].status.value == "failed"
     assert any("ranking failed in UI fixture" in e.value for e in app.error)

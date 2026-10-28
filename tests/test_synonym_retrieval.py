@@ -27,7 +27,10 @@ async def test_late_synonyms_are_used_and_ambiguous_ocr_is_qualified():
     )
     assert "text spotting" in plan.query_terms
     assert "end-to-end text spotting" in plan.query_terms
-    assert "optical character recognition in natural scenes" in plan.query_terms
+    assert "optical character recognition" in plan.query_terms
+    assert any(
+        q.term_contexts.get("optical character recognition") == ["scene text"] for q in plan.queries
+    )
     assert "OCR" not in plan.query_terms and "scene text" not in plan.query_terms
     assert len(plan.query_terms) <= 7
     assert plan.source_limit == 30
@@ -36,7 +39,7 @@ async def test_late_synonyms_are_used_and_ambiguous_ocr_is_qualified():
         for term in plan.query_terms:
             assert any(term in q.query for q in queries)
         assert all(q.filters.get("date_from") and q.filters.get("date_to") for q in queries)
-        assert len(queries) <= 14
+        assert len(queries) <= (14 if source == "crossref" else 4)
 
 
 def test_synonym_budget_deduplicates_case_and_explains_omissions():

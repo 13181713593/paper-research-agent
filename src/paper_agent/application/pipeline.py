@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from time import perf_counter
+from time import monotonic, perf_counter
 
 from paper_agent.application.progress import output_count, output_snapshot, paper_snapshot
 from paper_agent.domain.models import (
@@ -17,7 +17,9 @@ from paper_agent.domain.models import (
     ProcessingStatus,
     StageEvent,
 )
+from paper_agent.domain.provider_messages import provider_message
 from paper_agent.domain.publication_policy import is_recent, reserve_recent
+from paper_agent.domain.request_budget import RequestBudget, active_budget
 from paper_agent.ports.contracts import (
     EvidenceVerifier,
     FinalRanker,
@@ -47,11 +49,19 @@ class PipelineDependencies:
 
 
 class ResearchPipeline:
-    def __init__(self, deps: PipelineDependencies, max_concurrency: int = 4):
+    def __init__(
+        self,
+        deps: PipelineDependencies,
+        max_concurrency: int = 4,
+        source_timeout_seconds: float = 45.0,
+    ):
         if len(deps.retrievers) < 2:
             raise ValueError("At least two independent retrievers are required")
         self.deps = deps
         self.max_concurrency = max_concurrency
+        if source_timeout_seconds <= 0:
+            raise ValueError("source_timeout_seconds must be positive")
+        self.source_timeout_seconds = source_timeout_seconds
 
     async def run(
         self, request: PipelineRequest, event_sink: EventSink | None = None
@@ -133,9 +143,12 @@ class ResearchPipeline:
             )
             warnings.extend(plan.warnings)
 
+            retrieval_slots = asyncio.Semaphore(self.max_concurrency)
+
             async def retrieve_one(retriever: PaperRetriever) -> list[Paper]:
                 started_at = datetime.now(UTC)
                 started = perf_counter()
+                budget = RequestBudget(monotonic() + self.source_timeout_seconds)
                 details = {
                     "queries": [
                         q.model_dump(mode="json")
@@ -161,9 +174,34 @@ class ResearchPipeline:
                 errors = []
                 for query in queries or [None]:
                     query_start = perf_counter()
+                    attempt_info = {
+                        "query": query.query if query else "default",
+                        "language": query.language if query else None,
+                        "time_window": query.time_window if query else None,
+                        "date_from": query.filters.get("date_from") if query else None,
+                        "date_to": query.filters.get("date_to") if query else None,
+                        "sort_by": query.sort_by if query else None,
+                    }
+                    if errors:
+                        attempts.append(
+                            {
+                                **attempt_info,
+                                "status": "skipped",
+                                "count": 0,
+                                "duration_ms": 0,
+                                "message": "此来源本轮暂停，避免继续等待或重复请求。",
+                            }
+                        )
+                        continue
                     try:
                         query_plan = plan.model_copy(update={"queries": [query]}) if query else plan
-                        found = await retriever.search(query_plan)
+                        token = active_budget.set(budget)
+                        try:
+                            async with asyncio.timeout(budget.remaining()):
+                                async with retrieval_slots:
+                                    found = await retriever.search(query_plan)
+                        finally:
+                            active_budget.reset(token)
                         for paper in found:
                             identity = paper.doi or paper.arxiv_id or paper.title.casefold()
                             if identity not in seen:
@@ -195,6 +233,9 @@ class ResearchPipeline:
                                 "status": "failed",
                                 "count": 0,
                                 "error": str(exc),
+                                "error_code": type(exc).__name__,
+                                "message": provider_message(exc, retriever.source_name),
+                                "duration_ms": int((perf_counter() - query_start) * 1000),
                             }
                         )
                     await emit(
@@ -212,11 +253,9 @@ class ResearchPipeline:
                             },
                         )
                     )
+                budget.cancelled.set()
                 if errors:
-                    warnings.append(
-                        f"source {retriever.source_name} failed: "
-                        f"{len(errors)}/{len(queries) or 1} queries; {errors[-1]}"
-                    )
+                    warnings.append(provider_message(errors[-1], retriever.source_name))
                 succeeded = any(a["status"] == "succeeded" for a in attempts)
                 status = ProcessingStatus.PARTIAL if errors else ProcessingStatus.SUCCEEDED
                 if not succeeded:
@@ -242,7 +281,9 @@ class ResearchPipeline:
                         finished_at=datetime.now(UTC),
                         output_count=len(papers),
                         duration_ms=int((perf_counter() - started) * 1000),
-                        message=str(errors[-1]) if errors else None,
+                        message=provider_message(errors[-1], retriever.source_name)
+                        if errors
+                        else None,
                         error_code=type(errors[-1]).__name__ if errors else None,
                         details={**details, "query_results": attempts, **output_snapshot(papers)},
                     )
@@ -255,7 +296,9 @@ class ResearchPipeline:
                 )
                 papers = [paper for result in results for paper in result]
                 if not papers:
-                    raise RuntimeError("All paper sources failed or returned no results")
+                    raise RuntimeError(
+                        "本轮未取得文献：部分来源可能暂不可用，或检索条件未匹配。请查看各来源状态。"
+                    )
                 return papers
 
             retrieved = await stage(PipelineStage.RETRIEVED, retrieve_all)

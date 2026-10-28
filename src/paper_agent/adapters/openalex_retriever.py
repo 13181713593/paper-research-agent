@@ -48,6 +48,7 @@ class OpenAlexRetriever:
     def __init__(self, contact_email: str | None = None, timeout: float = 30.0):
         self.contact_email = contact_email or os.getenv("PAPER_AGENT_CONTACT_EMAIL", "")
         self.timeout = timeout
+        self.api_key = os.getenv("OPENALEX_API_KEY") or None
 
     async def search(self, plan: SearchPlan) -> list[Paper]:
         query = next((q for q in plan.queries if q.source == PaperSource.OPENALEX), None)
@@ -69,6 +70,8 @@ class OpenAlexRetriever:
         }
         if self.contact_email:
             params["mailto"] = self.contact_email
+        if self.api_key:
+            params["api_key"] = self.api_key
         dates = []
         if (filters or {}).get("date_from"):
             dates.append("from_publication_date:" + str(filters["date_from"]))
@@ -164,7 +167,13 @@ class OpenAlexRetriever:
             abstract=abstract,
             doi=doi,
             openalex_id=openalex_id,
-            venue=Venue(name=venue_name) if venue_name else None,
+            venue=Venue(
+                name=venue_name,
+                venue_type=source_info.get("type"),
+                publisher=source_info.get("host_organization_name"),
+            )
+            if venue_name
+            else None,
             citation_count=item.get("cited_by_count"),
             is_open_access=oa.get("is_oa"),
             open_access_url=(oa.get("oa_url") or None),
@@ -175,7 +184,10 @@ class OpenAlexRetriever:
                 SourceRecord(
                     source=PaperSource.OPENALEX,
                     source_id=openalex_id or doi or title,
-                    raw_metadata={"openalex_type": (item.get("type") or "")},
+                    raw_metadata={
+                        "openalex_type": (item.get("type") or ""),
+                        "citation_count": item.get("cited_by_count"),
+                    },
                 )
             ],
         )

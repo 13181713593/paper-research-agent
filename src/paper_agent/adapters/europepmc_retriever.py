@@ -11,6 +11,8 @@ locally from the already-fetched payload (one request per paper is avoided).
 from __future__ import annotations
 
 import asyncio
+import re
+from html import unescape
 from typing import Any
 
 from paper_agent.adapters._retriever_utils import (
@@ -89,12 +91,23 @@ class EuropePmcRetriever:
         if not title:
             return None
 
-        # authorString is a flat "Vakili AA, Jahanshiri S, Salimi-Badr A." —
-        # the API's structured author list is only in a separate request, so
-        # split on the flat form (trailing period stripped per name).
+        # resultType=core includes structured author affiliations and journalInfo.
         authors: list[Author] = []
         raw_authors = (item.get("authorString") or "").strip().rstrip(".")
-        if raw_authors:
+        for author in (item.get("authorList") or {}).get("author", []):
+            name = author.get("fullName") or " ".join(
+                filter(None, [author.get("firstName"), author.get("lastName")])
+            )
+            affiliations = [
+                a["affiliation"]
+                for a in (author.get("authorAffiliationDetailsList") or {}).get(
+                    "authorAffiliation", []
+                )
+                if a.get("affiliation")
+            ]
+            if name:
+                authors.append(Author(name=name, affiliations=affiliations))
+        if not authors and raw_authors:
             for name in raw_authors.split(","):
                 name = name.strip()
                 if name:
@@ -111,12 +124,23 @@ class EuropePmcRetriever:
 
         doi = normalize_doi(item.get("doi"))
         pmid = item.get("pmid")
-        venue_name = (item.get("journalTitle") or "").strip() or None
+        journal_info = item.get("journalInfo") or {}
+        journal = journal_info.get("journal") or {}
+        venue_name = (journal.get("title") or item.get("journalTitle") or "").strip() or None
         pmcid = item.get("pmcid")
-        landing_page = f"https://europepmc.org/article/{pmcid or pmid}" if (pmcid or pmid) else None
+        landing_page = (
+            f"https://europepmc.org/article/PMC/{pmcid}"
+            if pmcid
+            else f"https://europepmc.org/article/MED/{pmid}"
+            if pmid
+            else None
+        )
 
         # Abstracts may carry HTML tags (e.g. <p>, <italic>); strip to text.
-        abstract = (item.get("abstractText") or "").strip() or None
+        abstract = (
+            " ".join(unescape(re.sub(r"<[^>]+>", " ", item.get("abstractText") or "")).split())
+            or None
+        )
 
         cited_by = item.get("citedByCount")
         try:
@@ -137,12 +161,20 @@ class EuropePmcRetriever:
         return Paper(
             title=title,
             authors=authors,
+            institutions=list(dict.fromkeys(i for a in authors for i in a.affiliations)),
             publication_date=publication_date,
             year=year,
             abstract=abstract or None,
             doi=doi,
             pmid=pmid,
-            venue=Venue(name=venue_name) if venue_name else None,
+            venue=Venue(
+                name=venue_name,
+                venue_type="journal",
+                volume=journal_info.get("volume"),
+                issue=journal_info.get("issue"),
+            )
+            if venue_name
+            else None,
             citation_count=cited_by,
             is_open_access=item.get("isOpenAccess") == "Y",
             open_access_url=landing_page if item.get("isOpenAccess") == "Y" else None,
@@ -157,7 +189,7 @@ class EuropePmcRetriever:
                 SourceRecord(
                     source=PaperSource.EUROPE_PMC,
                     source_id=pmcid or pmid or doi or title,
-                    raw_metadata={"pmcid": pmcid, "pmid": pmid},
+                    raw_metadata={"pmcid": pmcid, "pmid": pmid, "citation_count": cited_by},
                 )
             ],
         )
