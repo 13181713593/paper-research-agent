@@ -38,20 +38,43 @@ python -m pip install -e ".[dev,processing]"
 
 ## 配置与启动
 
-首次使用时复制 `.env.example` 为 `.env`，已有配置不要覆盖。推荐保留模板中的 `PAPER_AGENT_ENV=production` 和 `PAPER_AGENT_MARKDOWN_BACKEND=auto`。
+仓库根目录的 `.env` 是**唯一凭证来源**，启动时自动读取，不再从其他项目补加载配置。
+
+```bash
+cp .env.example .env
+python scripts/setup_env.py        # 列出缺失/为空的键、申请入口与缺失后的降级行为
+```
+
+自检脚本只读本地文件、不联网、不打印密钥值；`--strict` 在缺少模型 Key 时返回非零退出码，可用于 CI。配置写入后需重启服务生效。
+
+### 凭证清单
+
+| 变量 | 级别 | 用途 | 申请入口 | 缺失时 |
+| --- | --- | --- | --- | --- |
+| `OPENAI_API_KEY` | 必需 | 单篇总结与综合报告；查询规划复用它 | [DeepSeek](https://platform.deepseek.com/api_keys) / [OpenAI](https://platform.openai.com/api-keys) | 改用 `PAPER_AGENT_LLM_API_KEY`；两者皆空则抽取式总结 + 模板报告 |
+| `PAPER_AGENT_LLM_API_KEY` | 可选 | 查询规划专用 Key | 同上 | 内置双语词典规划 |
+| `PAPER_AGENT_LLM_BASE_URL` / `PAPER_AGENT_LLM_MODEL` | 默认 | OpenAI-compatible 地址与模型 | DeepSeek 填 `https://api.deepseek.com` + `deepseek-flash` | 缺省为 OpenAI 地址与 `gpt-4o-mini`，与 DeepSeek 不匹配会调用失败 |
+| `MINERU_API_KEY` | 推荐 | 公式、表格与版面还原 | [mineru.net](https://mineru.net) → API 管理 → 新建 Token | `auto` 时退回 `pypdf`，公式无法可靠还原 |
+| `UNPAYWALL_EMAIL` | 推荐 | Unpaywall 公开全文定位，需真实邮箱 | [unpaywall.org](https://unpaywall.org/products/api) | 跳过该渠道 |
+| `OPENALEX_API_KEY` | 推荐 | OpenAlex 元数据与全文定位配额 | [openalex.org](https://openalex.org/settings/api-key) | 匿名调用，限额更低 |
+| `PAPER_AGENT_CONTACT_EMAIL` | 可选 | Crossref / OpenAlex 礼貌池 | 填常用邮箱 | 匿名调用，限流更严 |
+| `SEMANTIC_SCHOLAR_API_KEY` | 可选 | Semantic Scholar 检索配额 | [申请页](https://www.semanticscholar.org/product/api#api-key-form) | 匿名调用，易 429 |
+
+其余带默认值的变量（并发、超时、下载上限、重排模型等）见 [.env.example](.env.example)，`python scripts/setup_env.py` 会逐条说明用途。
+
+**分发方式**：`.env` 已被 `.gitignore` 排除，模板中没有任何真实密钥；合作者 clone 后由项目负责人通过私有渠道（私聊、团队网盘、密码管理器）提供一份 `.env`，或各自按上表申请自己的 Key。密钥不得提交到 Git，一旦进入提交历史即视为泄露，需要轮换。
 
 `auto` 配置了 `MINERU_API_KEY` 时会将 PDF 上传到 MinerU，识别公式、表格和版面并保存图片；无 Key 时使用本地 `pypdf`。工作台也可直接选择后端。`pypdf` 会合并文本硬换行、提取嵌入位图，但不能可靠恢复公式、扫描正文或矢量图；仅规范化已有 LaTeX，不编造缺失公式。
 
 全文资源 ZIP 应完整解压，保持 Markdown 与图片目录相对位置；单独 `.md` 内嵌图片，阅读器不支持 data URI 时请使用资源 ZIP。批量 ZIP 总大小限制为 200 MB，超限时请分篇下载。
 
-入口自动读取当前工作目录的 `.env`，已有环境变量优先（包括显式空值）；`.env`、数据、虚拟环境均不提交到 Git。
+已有环境变量优先（包括显式空值），因此不要用 `export` 预注入空值，否则会遮住 `.env` 里的真实值；`.env`、`data/`、`artifacts/`、虚拟环境均不提交到 Git。
 
-模型配置支持两个用途，密钥只在本地读取：
+模型有两个用途，密钥只在本地读取：
 
-- `PAPER_AGENT_LLM_API_KEY`：查询规划，生成英文专业术语和同义表达；同时保留中文查询。缺失或失败时使用内置双语词典，无法翻译的主题会明确告警。
-- `OPENAI_API_KEY`：单篇总结和综合报告优先使用此密钥；未填写时复用 `PAPER_AGENT_LLM_API_KEY`。两者都缺失或调用失败时，使用抽取式总结及注明限制的模板报告。
-- 两者共用 `PAPER_AGENT_LLM_BASE_URL`、`PAPER_AGENT_LLM_MODEL`。OpenAI-compatible 与 DeepSeek 配置见 [.env.example](.env.example)，实际 Key 只填本地配置。
-- `SEMANTIC_SCHOLAR_API_KEY`、`PAPER_AGENT_CONTACT_EMAIL`、`UNPAYWALL_EMAIL` 是检索/OA 定位可选配置；未配置的公开服务可能限流。
+- `PAPER_AGENT_LLM_API_KEY`（缺省复用 `OPENAI_API_KEY`）：查询规划，生成英文专业术语和同义表达，同时保留中文查询；缺失或失败时使用内置双语词典，无法翻译的主题会明确告警。
+- `OPENAI_API_KEY`：单篇总结和综合报告的主 Key；两者都缺失或调用失败时，使用抽取式总结及注明限制的模板报告。
+- 两者共用 `PAPER_AGENT_LLM_BASE_URL`、`PAPER_AGENT_LLM_MODEL`，DeepSeek 与 OpenAI-compatible 示例见 [.env.example](.env.example)。
 
 ```bash
 python -m streamlit run src/paper_agent/ui/app.py
