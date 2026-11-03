@@ -70,9 +70,7 @@ load_local_env()
 settings = Settings.from_env()
 job = st.session_state.get("research_job")
 research_running = job is not None and not job.snapshot()[3]
-mode = st.radio(
-    "运行入口", ["完整研究流程", "第三组独立演示"], horizontal=True, disabled=research_running
-)
+mode = "完整研究流程"
 
 with st.sidebar:
     st.header("任务配置")
@@ -133,8 +131,6 @@ idea = st.text_area(
     help="支持简短研究主题，例如“场景文本检测与识别”或“OCR”；补充方法与时间范围可帮助筛选。",
 )
 idea_text = idea.strip()
-if not idea_text:
-    st.info("请输入研究主题或研究问题后再开始。")
 
 with st.expander("可选检索约束"):
     c1, c2, c3 = st.columns(3)
