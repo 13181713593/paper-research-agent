@@ -48,9 +48,9 @@ st.markdown(
 
 
 @st.cache_resource
-def get_agent():
+def get_agent(settings: Settings):
     """Build the agent with source-level publication windows and newest-first retrieval."""
-    return build_agent()
+    return build_agent(settings)
 
 
 def store_research_result(result):
@@ -91,6 +91,11 @@ st.markdown(
 
 load_local_env()
 settings = Settings.from_env()
+if settings.app_env in {"demo", "ranking"}:
+    st.warning(
+        "当前使用演示检索：论文为虚构示例，不是真实检索结果。"
+        "请将 PAPER_AGENT_ENV 改为 production，重启服务并重新生成结果。"
+    )
 job = st.session_state.get("research_job")
 research_running = job is not None and not job.snapshot()[3]
 mode = "完整研究流程"
@@ -123,7 +128,7 @@ with st.sidebar:
     require_fulltext = st.checkbox("仅保留成功解析全文", value=False)
     allow_abstract_fallback = st.checkbox("全文失败时允许摘要降级", value=True)
     st.divider()
-    contract = get_agent().contract()
+    contract = get_agent(settings).contract()
     st.caption(f"服务版本 {contract.version} · 至少 {contract.minimum_sources} 个数据源")
     independent = mode == "第三组独立演示"
     if independent:
@@ -200,7 +205,7 @@ if start_research:
         allow_abstract_fallback=allow_abstract_fallback,
     )
     st.session_state["pipeline_live_selected_stage"] = None
-    st.session_state["research_job"] = ResearchJob(get_agent(), request).start()
+    st.session_state["research_job"] = ResearchJob(get_agent(settings), request).start()
     if not st.session_state["research_job"].snapshot()[3]:
         st.rerun()
 

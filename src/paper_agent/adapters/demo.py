@@ -46,6 +46,12 @@ class DemoQueryPlanner:
             ],
             inclusion_criteria=["Directly addresses the research idea", "Contains usable metadata"],
             exclusion_criteria=idea.excluded_terms,
+            warnings=[
+                (
+                    "当前使用离线演示检索，论文为虚构示例；"
+                    "真实检索请设置 PAPER_AGENT_ENV=production 并重新运行。"
+                )
+            ],
         )
 
 
@@ -57,7 +63,7 @@ class DemoRetriever:
     async def search(self, plan: SearchPlan) -> list[Paper]:
         idea = plan.intent_summary
         shared = Paper(
-            title=f"A Unified Study of {idea[:55]}",
+            title=f"[演示数据] A Unified Study of {idea[:55]}",
             authors=[Author(name="Alex Chen", affiliations=["Example University"])],
             institutions=["Example University"],
             publication_date=date(2026, 5, 1),
@@ -72,7 +78,7 @@ class DemoRetriever:
             source_records=[SourceRecord(source=self.source, source_id=f"{self.source}-shared")],
         )
         unique = Paper(
-            title=f"{self.source.value.title()} Evidence for {idea[:50]}",
+            title=f"[演示数据] {self.source.value.title()} Evidence for {idea[:50]}",
             authors=[Author(name="Taylor Li")],
             publication_date=date(2025, 11, 20),
             venue=Venue(name="Demo Journal", venue_type="journal"),
@@ -190,10 +196,16 @@ class DemoReportWriter:
             f"{i}. **{paper.title}** — score {paper.scores.final or 0:.3f}"
             for i, paper in enumerate(papers, 1)
         )
-        markdown = f"# Research report\n\n## Idea\n\n{idea.text}\n\n## Top papers\n\n{rows}\n"
+        markdown = (
+            "# [演示报告] Research report\n\n"
+            "> 此报告由演示组件生成，不可作为研究结论；"
+            "标注 [演示数据] 的论文是虚构示例。"
+            "真实研究请设置 PAPER_AGENT_ENV=production 并重新生成。\n\n"
+            f"## Idea\n\n{idea.text}\n\n## Top papers\n\n{rows}\n"
+        )
         return ResearchReport(
-            title="Research reference report",
-            executive_summary=f"Selected {len(papers)} papers for the supplied idea.",
+            title="[演示报告] Research reference report",
+            executive_summary=f"演示组件选出 {len(papers)} 篇论文，不可作为研究结论。",
             markdown=markdown,
             paper_ids=[p.paper_id for p in papers],
             future_directions=["Replace demo adapters with evaluated production components"],

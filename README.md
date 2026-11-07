@@ -8,10 +8,10 @@
 
 | `PAPER_AGENT_ENV` | 实际启用的组件 |
 |---|---|
-| `demo`（未配置时默认） | 全部使用离线演示组件 |
+| `demo`（须显式配置） | 全部使用离线演示组件，论文为标注的虚构示例 |
 | `retrieval` | 第一组真实检索与去重，其余阶段为演示组件 |
 | `ranking` | 第二组真实排序，其余阶段为演示组件 |
-| `production`（推荐） | 第一组真实检索与去重、第二组排序、第三组下载解析及总结报告 |
+| `production`（默认） | 第一组真实检索与去重、第二组排序、第三组下载解析及总结报告 |
 
 - 六个检索源：arXiv、Crossref、OpenAlex、Semantic Scholar、Europe PMC、OpenReview；单来源失败保留警告，其余来源继续。
 - 查询成功但返回 0 篇属于“未匹配”，不计为来源失败；超时、网络故障和限流才记为请求失败。arXiv 的中文原句可能没有匹配，系统仍保留英文改写召回的文献。
@@ -40,7 +40,7 @@ python -m pip install -e ".[dev,processing]"
 
 ## 配置与启动
 
-仓库根目录的 `.env` 是**唯一凭证来源**，启动时自动读取，不再从其他项目补加载配置。
+请在仓库根目录配置 `.env`。启动时先读取当前工作目录的 `.env`；不存在时读取本源码仓库根目录的 `.env`，方便从 IDE 或 MCP 启动，不从其他项目补加载配置。未配置运行模式时默认 `production`，未配置模型 Key 时仍执行真实检索，只对查询规划、总结和报告使用规则降级。
 
 ```bash
 cp .env.example .env
@@ -85,6 +85,8 @@ python -m streamlit run src/paper_agent/ui/app.py
 也兼容 `python -m dotenv -f .env run -- python -m streamlit run src/paper_agent/ui/app.py`。
 
 浏览器打开 `http://localhost:8501`，选择“完整研究流程”输入研究想法，或选择“第三组独立演示”填写 arXiv 编号（如 `1706.03762`、`1409.0473`）。更改配置后需重启并重新生成结果。
+
+如果结果出现 `A Unified Study of ...`、`Arxiv Evidence for ...` 或 `Openalex Evidence for ...`，这是演示组件将输入拼成的虚构论文标题，说明真实检索没有运行。将本地 `.env` 中的 `PAPER_AGENT_ENV` 设为 `production`，并检查启动终端是否还设置了优先级更高的 `PAPER_AGENT_ENV=demo` 或 `ranking`。重启服务后重新生成结果，旧报告不会自动变成真实结果。显式启用演示模式时，页面、论文标题和导出的演示报告都会标注。
 
 ## 结果说明
 

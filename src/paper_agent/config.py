@@ -13,14 +13,21 @@ from pathlib import Path
 
 
 def load_local_env(path: str | Path | None = None) -> None:
-    """Load KEY=VALUE pairs from a local ``.env`` file into ``os.environ``.
+    """Load a local ``.env``, falling back to this source checkout's root.
 
     Keys already present in the real environment win (no overrides), so CI
     and container settings are never shadowed. Values may be quoted; blank
     lines and ``#`` comments are skipped. Deliberately dependency-free —
     this only supports the plain ``KEY=VALUE`` shape the project documents.
+    An explicit path never falls back to another file.
     """
     target = Path(path) if path is not None else Path.cwd() / ".env"
+    if path is None and not target.is_file():
+        # Streamlit/IDE/MCP may start outside the checkout. Only fall back to
+        # this source checkout, never scan unrelated parent/project .env files.
+        root = Path(__file__).resolve().parents[2]
+        if (root / "pyproject.toml").is_file():
+            target = root / ".env"
     if not target.is_file():
         return
     for line in target.read_text(encoding="utf-8").splitlines():
@@ -36,7 +43,7 @@ def load_local_env(path: str | Path | None = None) -> None:
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    app_env: str = "demo"
+    app_env: str = "production"
     max_concurrency: int = 4
     # 每个检索来源的总时间预算。来源内查询是顺序执行的，45 秒会把
     # OpenAlex 这类需要 6 条查询的来源截断，候选池与可下载全文随之变少。
@@ -60,7 +67,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> Settings:
         return cls(
-            app_env=os.getenv("PAPER_AGENT_ENV", "demo"),
+            app_env=os.getenv("PAPER_AGENT_ENV", "production"),
             max_concurrency=min(32, max(1, int(os.getenv("PAPER_AGENT_MAX_CONCURRENCY", "4")))),
             source_timeout_seconds=max(
                 10.0,

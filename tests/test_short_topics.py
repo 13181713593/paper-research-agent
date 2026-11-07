@@ -31,7 +31,7 @@ def test_blank_topic_is_rejected(topic):
 def ui(monkeypatch):
     agent = PaperResearchAgent(ResearchPipeline(build_demo_dependencies()))
     agent.research = AsyncMock(wraps=agent.research)
-    monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda: agent)
+    monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda settings=None: agent)
     st.cache_resource.clear()
     try:
         app = AppTest.from_file(str(APP), default_timeout=30)

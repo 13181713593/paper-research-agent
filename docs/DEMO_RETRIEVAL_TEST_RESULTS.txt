@@ -1,0 +1,20 @@
+Integration base: d8286c1 (origin/main)
+Validation date: 2026-11-07
+Command: python -m pytest --tb=short
+Result: 494 passed, 3 skipped in 45.82s
+Command: python -m ruff check src tests
+Result: All checks passed!
+Command: git diff --check
+Result: passed
+
+Includes 13 new runtime-mode regression cases.
+The three optional network/paid-model smoke tests were not enabled in pytest.
+Manual live UI check on 2026-11-07: the requested 5G/6G query completed all
+nine stages, returned five papers, and obtained full text for four of them.
+Some sources were rate-limited. No model API was configured: summaries and
+the report used the extractive/template fallback. This does not validate
+the correctness or completeness of the cross-architecture comparison.
+
+Historical note: the earlier f2e9be7 baseline had 15 failing UI tests in both
+the unchanged and locally fixed checkout. The incoming d8286c1 changes
+updated those UI tests; the integrated suite above now passes.

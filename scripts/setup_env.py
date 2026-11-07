@@ -32,7 +32,7 @@ SPECS: tuple[Spec, ...] = (
         "默认",
         "运行模式：production 启用真实检索、下载与模型",
         ".env.example 已给 production 示例",
-        "缺省为 demo，仅使用演示数据",
+        "缺省为 production；demo / ranking 会使用虚构演示论文",
     ),
     Spec("PAPER_AGENT_DATA_DIR", "默认", "PDF、Markdown、图片与运行产物目录", "-", "缺省为 ./data"),
     Spec("PAPER_AGENT_MAX_CONCURRENCY", "默认", "检索并发上限（1-32）", "-", "缺省为 4"),

@@ -132,7 +132,7 @@ def test_query_table_distinguishes_empty_matches_and_actual_request_errors():
 
 def test_page_displays_all_stage_results_and_retains_them_on_rerun(monkeypatch):
     agent = PaperResearchAgent(ResearchPipeline(build_demo_dependencies()))
-    monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda: agent)
+    monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda settings=None: agent)
     st.cache_resource.clear()
     app = debug_app(str(APP), default_timeout=30).run()
     assert not app.exception
@@ -175,7 +175,8 @@ def test_failed_page_keeps_successful_source_papers_and_shows_errors(monkeypatch
     deps = build_demo_dependencies()
     deps.pre_ranker = BrokenRanker()
     monkeypatch.setattr(
-        "paper_agent.bootstrap.build_agent", lambda: PaperResearchAgent(ResearchPipeline(deps))
+        "paper_agent.bootstrap.build_agent",
+        lambda settings=None: PaperResearchAgent(ResearchPipeline(deps)),
     )
     st.cache_resource.clear()
     app = debug_app(str(APP), default_timeout=30).run()
@@ -197,7 +198,7 @@ def test_failed_page_keeps_successful_source_papers_and_shows_errors(monkeypatch
 
 def test_idle_navigator_shows_nine_pending_stages(monkeypatch):
     agent = PaperResearchAgent(ResearchPipeline(build_demo_dependencies()))
-    monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda: agent)
+    monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda settings=None: agent)
     st.cache_resource.clear()
     app = debug_app(str(APP), default_timeout=30).run()
     buttons = [b for b in app.button if "_stage_" in (b.key or "")]
@@ -221,7 +222,7 @@ def test_navigating_completed_stage_while_running_keeps_same_worker(monkeypatch)
     deps.pre_ranker = PausedRanker()
     agent = PaperResearchAgent(ResearchPipeline(deps))
     agent.research = AsyncMock(wraps=agent.research)
-    monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda: agent)
+    monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda settings=None: agent)
     st.cache_resource.clear()
     try:
         app = debug_app(str(APP), default_timeout=30).run()
@@ -375,7 +376,7 @@ def test_progress_aliases_legacy_fulltext_and_hides_verification():
 
 def test_download_and_conversion_stages_show_pool_and_per_paper_progress(monkeypatch):
     agent = PaperResearchAgent(ResearchPipeline(build_demo_dependencies()))
-    monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda: agent)
+    monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda settings=None: agent)
     st.cache_resource.clear()
     app = debug_app(str(APP), default_timeout=30).run()
     app.button[0].click().run()
