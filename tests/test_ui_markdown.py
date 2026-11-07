@@ -39,6 +39,43 @@ from paper_agent.ui.markdown_exports import (
 )
 
 APP = Path(__file__).resolve().parents[1] / "src/paper_agent/ui/app.py"
+
+
+def debug_app(*args, **kwargs):
+    """Existing stage-detail checks explicitly exercise debug mode."""
+    app = AppTest.from_file(*args, **kwargs)
+    app.session_state["display_mode"] = "调试模式"
+    app.session_state["research_idea"] = "验证文献检索与总结"
+    return app
+
+
+@pytest.fixture
+def workbench_ui(ui):
+    """Exercise the retained workbench directly, without restoring the hidden home entry."""
+    _, agent, download = ui
+    app = AppTest.from_string(
+        """
+import streamlit as st
+from paper_agent.config import Settings, load_local_env
+from paper_agent.ui.workbench import render_workbench, render_processing_metrics
+from paper_agent.ui.progress import PipelineProgress
+
+load_local_env()
+settings = Settings.from_env()
+render_workbench(settings, "验证文献检索与总结", debug=True)
+result = st.session_state.get("pipeline_result")
+if result:
+    render_processing_metrics(result)
+    PipelineProgress(
+        None, key=f"pipeline_{result.run_id}", result=result,
+        settings=settings, workbench=True,
+    ).replay(result.progress_events or result.events, result.status)
+""",
+        default_timeout=15,
+    )
+    return app, agent, download
+
+
 FULLTEXT = "# 中文论文\n\n## 方法\n这是真实解析产物的测试正文。\n\n| 方法 | 结果 |\n| --- | --- |\n| A | 1 |\n"
 
 
@@ -242,13 +279,83 @@ def ui(tmp_path, monkeypatch, result):
         mock.patch("paper_agent.bootstrap.build_agent", return_value=agent),
         mock.patch("streamlit.download_button", wraps=st.download_button) as download,
     ):
-        app = AppTest.from_file(str(APP), default_timeout=15)
+        app = debug_app(str(APP), default_timeout=15)
         yield app, agent, download
     st.cache_resource.clear()
 
 
 def download_calls(download, label):
     return [call for call in download.call_args_list if call.args[0] == label]
+
+
+def test_home_starts_with_empty_topic_and_no_download_panel(ui):
+    app = AppTest.from_file(str(APP), default_timeout=15).run()
+    assert not app.exception
+    assert app.text_area(key="research_idea").value == ""
+    assert app.button[0].disabled
+    assert not any(item.value == "研究资料包" for item in app.subheader)
+    assert not any(b.key == "prepare_home_bundle" for b in app.button)
+
+
+@pytest.mark.parametrize(
+    "status,stage,visible",
+    [
+        (ProcessingStatus.RUNNING, PipelineStage.REPORTED, False),
+        (ProcessingStatus.FAILED, PipelineStage.SUMMARIZED, False),
+        (ProcessingStatus.PARTIAL, PipelineStage.SUMMARIZED, False),
+        (ProcessingStatus.PARTIAL, PipelineStage.REPORTED, True),
+        (ProcessingStatus.SUCCEEDED, PipelineStage.REPORTED, True),
+    ],
+)
+def test_home_bundle_waits_for_completed_workflow(ui, result, status, stage, visible):
+    app, _, _ = ui
+    app.session_state["pipeline_result"] = result.model_copy(
+        update={"status": status, "stage": stage}
+    )
+    app.run()
+    assert not app.exception
+    assert any(b.key == "prepare_home_bundle" for b in app.button) == visible
+
+
+def test_home_bundle_contains_candidate_pdfs_markdown_and_generated_outputs(tmp_path, result):
+    from paper_agent.config import Settings
+    from paper_agent.ui.stage_panels import build_research_bundle
+
+    candidate = Paper(title="未进入 Top-k 的候选论文")
+    pdf = tmp_path / "candidate.pdf"
+    pdf.write_bytes(b"%PDF-1.4\ncandidate")
+    candidate.fulltext.local_pdf_path = str(pdf)
+    result.metadata_papers = [result.papers[0], candidate]
+    settings = Settings(data_dir=str(tmp_path))
+    with ZipFile(BytesIO(build_research_bundle(result, settings))) as archive:
+        names = archive.namelist()
+        assert len([n for n in names if n.startswith("pdfs/")]) == 1
+        assert any(n.startswith("papers/") and n.endswith(".md") for n in names)
+        assert any(n.startswith("summaries/") for n in names)
+        assert archive.read("research_report.md").decode("utf-8") == result.report.markdown
+
+
+def test_home_download_and_mode_switch_do_not_regenerate(ui, result):
+    app, agent, download = ui
+    app.session_state["display_mode"] = "运行模式"
+    app.run()
+    assert not app.exception
+    assert not any("_stage_" in (b.key or "") for b in app.button)
+    app.button[0].click().run()
+    assert not app.exception
+    assert len(app.tabs) == 2
+    assert not app.metric
+    app.button(key="prepare_home_bundle").click().run()
+    assert not app.exception
+    assert download_calls(download, "下载全部资料（ZIP）")
+    app.sidebar.radio(key="display_mode").set_value("调试模式").run()
+    assert not app.exception
+    assert len([b for b in app.button if "_stage_" in (b.key or "")]) == 9
+    app.sidebar.radio(key="display_mode").set_value("运行模式").run()
+    assert not app.exception
+    assert not any("_stage_" in (b.key or "") for b in app.button)
+    assert app.session_state["pipeline_result"].run_id == result.run_id
+    assert agent.research.await_count == 1
 
 
 def open_stage(app, stage):
@@ -305,9 +412,7 @@ def test_ui_describes_actual_mode(ui, monkeypatch, mode, description):
     app.run()
     assert not app.exception
     assert any(description in item.value for item in app.sidebar.info)
-    app.radio[0].set_value("第三组独立演示").run()
-    assert not app.exception
-    assert any("不执行检索或排序" in item.value for item in app.sidebar.info)
+    assert not any(radio.label == "运行入口" for radio in app.radio)
 
 
 def test_ui_loads_dotenv_before_display_settings(ui, monkeypatch, tmp_path):
@@ -409,10 +514,10 @@ def test_evidence_from_wrong_paper_is_not_verified(summary):
     assert evidence_audit(summary, summary.evidence[0].quote)[0]["核对"] == "未定位"
 
 
-def test_ui_workbench_does_not_invoke_retrieval(ui, result):
+def test_ui_workbench_does_not_invoke_retrieval(workbench_ui, result):
     from paper_agent.application.processing_workbench import PaperProcessingRecord, ProcessingRun
 
-    app, agent, download = ui
+    app, agent, download = workbench_ui
     paper = result.papers[0]
     paper.arxiv_id = "1706.03762"
     paper.landing_page_url = "https://arxiv.org/abs/1706.03762"
@@ -441,7 +546,7 @@ def test_ui_workbench_does_not_invoke_retrieval(ui, result):
     workbench = mock.Mock()
     workbench.run = mock.AsyncMock(return_value=run)
     with mock.patch("paper_agent.ui.workbench.build_processing_workbench", return_value=workbench):
-        app.run().radio[0].set_value("第三组独立演示").run()
+        app.run()
         app.button[0].click().run()
     assert not app.exception
     assert not agent.research.called
@@ -489,10 +594,10 @@ def test_ui_full_pipeline_keeps_populated_ranking_fields(ui, result):
     assert "最终分数（满分2）" in app.dataframe[0].value.columns
 
 
-def test_ui_workbench_bad_input_does_not_start_processing(ui):
-    app, agent, _ = ui
+def test_ui_workbench_bad_input_does_not_start_processing(workbench_ui):
+    app, agent, _ = workbench_ui
     with mock.patch("paper_agent.ui.workbench.build_processing_workbench") as builder:
-        app.run().radio[0].set_value("第三组独立演示").run()
+        app.run()
         app.text_area(key="workbench_ids").set_value("http://127.0.0.1/private").run()
         app.button[0].click().run()
         assert not builder.called
@@ -565,7 +670,12 @@ def test_image_symlinks_cannot_escape_asset_directory(paper, tmp_path):
     asset.parent.mkdir()
     private = tmp_path / "private.png"
     private.write_bytes(b"private")
-    asset.symlink_to(private)
+    try:
+        asset.symlink_to(private)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows 未授予创建符号链接权限")
+        raise
     assert "图片不可用" in embed_paper_images(paper, tmp_path, "![figure](paper_assets/linked.png)")
 
 
@@ -632,13 +742,13 @@ def test_ui_candidate_pdfs_are_not_lost_after_top_k_selection(ui, result, tmp_pa
     ],
 )
 def test_workbench_default_backend_matches_configuration(
-    ui, monkeypatch, configured, key_available, expected
+    workbench_ui, monkeypatch, configured, key_available, expected
 ):
-    app, agent, _ = ui
+    app, agent, _ = workbench_ui
     monkeypatch.setenv("PAPER_AGENT_MARKDOWN_BACKEND", configured)
     monkeypatch.setenv("MINERU_API_KEY", "test-token" if key_available else "")
     with mock.patch("paper_agent.ui.workbench.build_processing_workbench") as builder:
-        app.run().radio[0].set_value("第三组独立演示").run()
+        app.run()
         assert not app.exception
         assert app.selectbox(key="workbench_backend").value == expected
         assert app.button[0].disabled == (expected == "mineru" and not key_available)
@@ -650,11 +760,11 @@ def test_workbench_default_backend_matches_configuration(
     assert not agent.research.called
 
 
-def test_workbench_preserves_manual_backend_until_configuration_changes(ui, monkeypatch):
-    app, agent, _ = ui
+def test_workbench_preserves_manual_backend_until_configuration_changes(workbench_ui, monkeypatch):
+    app, agent, _ = workbench_ui
     monkeypatch.setenv("MINERU_API_KEY", "test-token")
     monkeypatch.setenv("PAPER_AGENT_MARKDOWN_BACKEND", "auto")
-    app.run().radio[0].set_value("第三组独立演示").run()
+    app.run()
     assert app.selectbox(key="workbench_backend").value == "mineru"
     app.selectbox(key="workbench_backend").set_value("pypdf").run()
     app.run()
@@ -669,9 +779,9 @@ def test_workbench_preserves_manual_backend_until_configuration_changes(ui, monk
     assert not agent.research.called
 
 
-def test_workbench_requires_key_for_selected_formula_backend(ui):
-    app, agent, _ = ui
-    app.run().radio[0].set_value("第三组独立演示").run()
+def test_workbench_requires_key_for_selected_formula_backend(workbench_ui):
+    app, agent, _ = workbench_ui
+    app.run()
     app.selectbox(key="workbench_backend").set_value("mineru").run()
     assert not app.exception
     assert app.button[0].disabled

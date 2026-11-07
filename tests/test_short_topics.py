@@ -34,7 +34,9 @@ def ui(monkeypatch):
     monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda: agent)
     st.cache_resource.clear()
     try:
-        app = AppTest.from_file(str(APP), default_timeout=30).run()
+        app = AppTest.from_file(str(APP), default_timeout=30)
+        app.session_state["research_idea"] = "验证文献检索与总结"
+        app.run()
         assert not app.exception
         yield app, agent
     finally:
@@ -62,14 +64,21 @@ def test_blank_edit_and_click_preserve_previous_result(ui):
     app.button[0].click().run()
     assert not app.exception
     assert app.button[0].disabled
-    assert any("请输入研究主题" in message.value for message in app.info)
     agent.research.assert_awaited_once()
     assert app.session_state["pipeline_result"].run_id == previous_id
 
 
 def test_workbench_accepts_short_topic_and_disables_blank_topic(ui):
-    app, _ = ui
-    app.radio[0].set_value("第三组独立演示").run()
+    app = AppTest.from_string(
+        """
+import streamlit as st
+from paper_agent.config import Settings
+from paper_agent.ui.workbench import render_workbench
+
+idea = st.text_area("研究想法")
+render_workbench(Settings.from_env(), idea)
+"""
+    ).run()
     app.text_area[0].set_value("场景文本检测与识别").run()
     assert not app.exception
     assert not app.button[0].disabled

@@ -12,13 +12,34 @@ from paper_agent.domain.models import PipelineRequest, ProcessingStatus, Researc
 from paper_agent.domain.publication_policy import is_recent
 from paper_agent.ui.progress import HIDDEN_STAGES, PipelineProgress
 from paper_agent.ui.research_job import ResearchJob
+from paper_agent.ui.stage_panels import render_home_download, render_release_results
 from paper_agent.ui.workbench import render_processing_metrics, render_workbench
 
 st.set_page_config(page_title="论文研究智能体", page_icon="📚", layout="wide")
 st.markdown(
     """
     <style>
-    .block-container {max-width: 1280px; padding-top: 2rem;}
+    .block-container {max-width: 1180px; padding-top: 5rem; padding-bottom: 4rem;}
+    [data-testid="stAppViewContainer"] {
+      background: radial-gradient(ellipse at top right, #eaf2ff55, transparent 55%);
+    }
+    [data-testid="stSidebar"] {border-right: 1px solid #94a3b826;}
+    h1 {letter-spacing: -.035em; font-weight: 800 !important;}
+    h3 {letter-spacing: -.02em;}
+    [data-testid="stVerticalBlockBorderWrapper"] {border-radius: 18px;}
+    .stButton button, .stDownloadButton button {border-radius: 10px; min-height: 44px;}
+    .stButton button[kind="primary"] {
+      background: linear-gradient(120deg, #2563eb, #4f46e5); border: 0;
+      box-shadow: 0 4px 14px #2563eb24;
+    }
+    .research-hero {padding: 1.8rem 2rem; border-radius: 22px; margin-bottom: 1.5rem;
+      background: linear-gradient(120deg, #132b50, #234ca0 65%, #4f46a1); color: #fff;}
+    .research-hero .eyebrow {color: #b8d6ff; font-size: .8rem; letter-spacing: .14em;}
+    .research-hero h1 {color: white; font-size: clamp(1.8rem, 3vw, 2.65rem); padding: .6rem 0;}
+    .research-hero p {color: #e0eaff; margin-bottom: .3rem; line-height: 1.8;}
+    @media (max-width: 640px) {
+      .block-container {padding-top: 5rem;} .research-hero {padding: 1.3rem;}
+    }
     [data-testid="stMetricValue"] {font-size: 1.55rem;}
     </style>
     """,
@@ -43,15 +64,15 @@ def store_research_result(result):
 
 
 @st.fragment(run_every=1)
-def render_running_research(job, stages):
+def render_running_research(job, stages, debug):
     events, result, error, done = job.snapshot()
     if done and result is not None:
         store_research_result(result)
         st.rerun()
-    if error:
+    if error and debug:
         st.error(error)
     st.caption(f"当前任务：{job.request.idea.text}")
-    PipelineProgress(stages, key="pipeline_live").replay(
+    PipelineProgress(stages, key="pipeline_live", compact=not debug).replay(
         events, ProcessingStatus.FAILED if error else None
     )
 
@@ -60,10 +81,12 @@ def split_terms(value: str) -> list[str]:
     return [term.strip() for term in value.replace("，", ",").split(",") if term.strip()]
 
 
-st.title("多源论文检索与总结智能体")
-st.caption(
-    "查询规划 → 多源检索 → 合并去重 → 元数据预排序 → 论文下载 → "
-    "转换为 Markdown → 最终重排 → 单篇总结 → 综合报告"
+st.markdown(
+    '<div class="research-hero"><div class="eyebrow">PAPER RESEARCH · 文献研究工作台</div>'
+    "<h1>从研究想法，到有据可循的综述</h1>"
+    "<p>多源发现相关论文，整理全文与关键证据，让研究线索汇成清晰的报告。</p>"
+    "<p>多源检索 &nbsp; / &nbsp; 全文阅读 &nbsp; / &nbsp; 研究综述</p></div>",
+    unsafe_allow_html=True,
 )
 
 load_local_env()
@@ -73,6 +96,15 @@ research_running = job is not None and not job.snapshot()[3]
 mode = "完整研究流程"
 
 with st.sidebar:
+    st.subheader("显示模式")
+    display_mode = st.radio(
+        "页面显示",
+        ["运行模式", "调试模式"],
+        key="display_mode",
+        help="运行模式聚焦当前进度与研究成果；调试模式展示每个阶段的详细结果。",
+    )
+    debug = display_mode == "调试模式"
+    st.divider()
     st.header("任务配置")
     top_k = st.slider("最终论文数 Top-k", 1, 100, 5, help="全文确认后最终返回的论文数")
     pool_size = st.slider(
@@ -125,7 +157,8 @@ with st.sidebar:
 
 idea = st.text_area(
     "研究想法",
-    value="面向无人机视觉语言导航的长期记忆、失败恢复与世界模型联合方法",
+    value="",
+    key="research_idea",
     height=130,
     placeholder="请描述研究对象、核心问题、方法侧重点和期望时间范围……",
     help="支持简短研究主题，例如“场景文本检测与识别”或“OCR”；补充方法与时间范围可帮助筛选。",
@@ -139,10 +172,9 @@ with st.expander("可选检索约束"):
     focus_text = c3.text_input("排序侧重点（逗号分隔）", placeholder="方法相似度, 最新工作")
 
 if mode == "第三组独立演示":
-    render_workbench(settings, idea)
+    render_workbench(settings, idea, debug=debug)
 else:
-    st.caption("点击下方按钮生成结果；完成后可下载论文全文 Markdown、单篇总结和综合报告。")
-    st.caption("综合报告输出1000–1500字中文综述；全文不可用的文献仍保留在“全部文献元数据”。")
+    st.caption("生成论文清单、单篇总结与中文综合报告，并统一下载研究资料。")
 start_research = mode == "完整研究流程" and st.button(
     "开始研究（下载论文并生成总结）",
     type="primary",
@@ -153,6 +185,7 @@ start_research = mode == "完整研究流程" and st.button(
 start_research = start_research and bool(idea_text) and not research_running
 if start_research:
     st.session_state.pop("pipeline_result", None)
+    st.session_state.pop("research_bundle", None)
     request = PipelineRequest(
         idea=ResearchIdea(
             text=idea_text,
@@ -177,11 +210,12 @@ if job is not None:
     if done and completed_result is not None:
         store_research_result(completed_result)
     else:
-        render_running_research(job, contract.stages)
+        render_running_research(job, contract.stages, debug)
 
 result = st.session_state.get("pipeline_result")
 if result:
-    render_processing_metrics(result)
+    if debug:
+        render_processing_metrics(result)
     processing_run = st.session_state.get("processing_run")
     is_workbench = bool(processing_run and processing_run.result.run_id == result.run_id)
     # 下载、预览与审计随各阶段渲染，不再集中到最后一段统一总结。
@@ -191,19 +225,24 @@ if result:
         result=result,
         settings=settings,
         workbench=is_workbench,
+        compact=not debug,
     ).replay(result.progress_events or result.events, result.status)
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("最终论文", len(result.papers))
-    m2.metric(
-        "完成阶段",
-        sum(
-            e.status != ProcessingStatus.FAILED
-            for e in result.events
-            if e.stage not in HIDDEN_STAGES
-        ),
-    )
-    m3.metric("累计阶段耗时", f"{result.total_duration_ms / 1000:.2f}s")
-    m4.metric("警告", len(result.warnings))
+    render_home_download(result, settings)
+    if not debug:
+        render_release_results(result)
+    if debug:
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("最终论文", len(result.papers))
+        m2.metric(
+            "完成阶段",
+            sum(
+                e.status != ProcessingStatus.FAILED
+                for e in result.events
+                if e.stage not in HIDDEN_STAGES
+            ),
+        )
+        m3.metric("累计阶段耗时", f"{result.total_duration_ms / 1000:.2f}s")
+        m4.metric("警告", len(result.warnings))
     plan_data = next(
         (e.details.get("plan", {}) for e in result.events if e.stage.value == "query_planned"), {}
     )
@@ -220,6 +259,6 @@ if result:
 
 elif st.session_state.get("research_job") is None:
     if mode == "完整研究流程":
-        PipelineProgress(contract.stages, key="pipeline_idle").replay([])
+        PipelineProgress(contract.stages, key="pipeline_idle", compact=not debug).replay([])
     else:
         st.info("先处理论文，完成后可下载全文、单篇总结和综合报告。")

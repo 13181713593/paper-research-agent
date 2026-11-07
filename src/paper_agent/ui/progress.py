@@ -237,6 +237,7 @@ class PipelineProgress:
         result=None,
         settings=None,
         workbench: bool = False,
+        compact: bool = False,
     ):
         self.stages = stages or list(DEFAULT_STAGES)
         self.hidden = [stage for stage in HIDDEN_STAGES if stage not in self.stages]
@@ -252,6 +253,7 @@ class PipelineProgress:
         self.result = result
         self.settings = settings
         self.workbench = workbench
+        self.compact = compact
 
     @staticmethod
     def _child_key(event: StageEvent) -> str:
@@ -281,6 +283,9 @@ class PipelineProgress:
         self.render()
 
     def render(self) -> None:
+        if self.compact:
+            self.render_compact()
+            return
         completed = sum(
             e.status in {ProcessingStatus.SUCCEEDED, ProcessingStatus.PARTIAL}
             for e in self.latest.values()
@@ -370,6 +375,40 @@ class PipelineProgress:
             if selected_value is None and not self.finished:
                 st.caption("正在跟随当前进度；点击上方阶段可固定查看。")
             self.render_stage(selected)
+
+    def render_compact(self) -> None:
+        """发布视图只显示当前流程和已处理数量，不回放阶段明细。"""
+        ended = sum(e.status != ProcessingStatus.RUNNING for e in self.latest.values())
+        running = [
+            s
+            for s in self.stages
+            if s in self.latest and self.latest[s].status == ProcessingStatus.RUNNING
+        ]
+        current = (
+            running[-1]
+            if running
+            else next((s for s in reversed(self.stages) if s in self.latest), None)
+        )
+        with st.container(border=True, key="research_progress"):
+            st.subheader("研究进度")
+            if self.finished:
+                title = "本次研究已结束" if self.status == ProcessingStatus.FAILED else "研究已完成"
+            elif current:
+                title = f"正在进行：{STAGE_LABELS[current]}"
+            else:
+                title = "准备就绪，开始你的文献研究"
+            st.markdown(f"**{title}**")
+            st.progress(
+                ended / len(self.stages), text=f"已完成 {ended} / {len(self.stages)} 个流程"
+            )
+            if current and not self.finished:
+                children = self.children[current].values()
+                processed = sum(e.status != ProcessingStatus.RUNNING for e in children)
+                if processed:
+                    unit = "个来源" if any(e.scope == "source" for e in children) else "篇论文"
+                    st.caption(f"当前流程已处理 {processed} {unit}")
+            if self.status == ProcessingStatus.FAILED:
+                st.warning("本次任务提前结束，已准备好的文件仍可下载；可切换到调试模式查看原因。")
 
     def render_stage(self, name: PipelineStage) -> None:
         event = self.latest.get(name)

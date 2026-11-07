@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from dataclasses import asdict, replace
 
 import streamlit as st
@@ -23,7 +24,7 @@ from paper_agent.config import Settings
 from paper_agent.domain.models import PipelineResult, ResearchIdea
 
 
-def render_workbench(settings: Settings, idea: str) -> None:
+def render_workbench(settings: Settings, idea: str, *, debug: bool = True) -> None:
     with st.container(border=True):
         st.subheader("第三组 · 公开论文处理工作台")
         st.caption(
@@ -71,10 +72,11 @@ def render_workbench(settings: Settings, idea: str) -> None:
             if backend == "auto":
                 st.warning("auto 未检测到 MINERU_API_KEY，当前将使用本地 pypdf。")
             st.info("本地 pypdf 可恢复文本段落并提取嵌入图片，不能可靠识别公式和矢量图。")
-        st.caption(
-            "进度日志按完成先后显示；已处理数量包含成功、失败和跳过，"
-            "“第几篇”是输入序号。最终论文和总结仍按输入顺序展示。"
-        )
+        if debug:
+            st.caption(
+                "进度日志按完成先后显示；已处理数量包含成功、失败和跳过，"
+                "“第几篇”是输入序号。最终论文和总结仍按输入顺序展示。"
+            )
         st.caption(
             "该入口始终使用真实处理组件。配置总结 API 后会发送论文材料；未配置则使用抽取式总结。"
         )
@@ -87,17 +89,29 @@ def render_workbench(settings: Settings, idea: str) -> None:
         ):
             try:
                 papers = papers_from_arxiv_ids(ids)
-                with st.status("第三组正在处理真实论文……", expanded=True) as status:
+                with st.status("正在处理论文……", expanded=debug) as status:
+
+                    def show_progress(message):
+                        if debug:
+                            st.write(message)
+                        else:
+                            # 累计日志仅供调试；运行视图原位更新流程和完成数量。
+                            clean = message.split("（成功", 1)[0].rstrip("；。")
+                            clean = re.sub("已成功生成的", "已整理的", clean)
+                            if "基本信息获取失败" in clean:
+                                clean = "正在准备全文处理……"
+                            status.update(label=clean)
+
                     run = asyncio.run(
                         build_processing_workbench(replace(settings, markdown_backend=backend)).run(
                             ResearchIdea(text=idea),
                             papers,
                             concurrency=concurrency,
-                            progress=st.write,
+                            progress=show_progress,
                         )
                     )
                     status.update(
-                        label=f"处理结束：{run.result.status.value}",
+                        label=f"处理结束：{run.result.status.value}" if debug else "论文处理已结束",
                         state="error" if run.result.status.value == "failed" else "complete",
                     )
                 st.session_state["pipeline_result"] = run.result

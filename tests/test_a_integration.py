@@ -233,8 +233,10 @@ def test_production_ui_runs_real_offline_chain(production_fixture, monkeypatch, 
     st.cache_resource.clear()
     try:
         with mock.patch("paper_agent.bootstrap.build_agent", return_value=agent):
-            app = AppTest.from_file(str(app_path), default_timeout=20).run()
-            app.text_area[0].set_value("scientific evidence summarization")
+            app = AppTest.from_file(str(app_path), default_timeout=20)
+            app.session_state["display_mode"] = "调试模式"
+            app.run()
+            app.text_area(key="research_idea").set_value("scientific evidence summarization").run()
             app.button[0].click().run()
         assert not app.exception
         result = app.session_state["pipeline_result"]

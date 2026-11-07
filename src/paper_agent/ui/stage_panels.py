@@ -10,7 +10,7 @@ import streamlit as st
 
 from paper_agent.application.processing_benchmark import benchmark_to_markdown
 from paper_agent.config import Settings
-from paper_agent.domain.models import Paper, PipelineResult
+from paper_agent.domain.models import Paper, PipelineResult, PipelineStage, ProcessingStatus
 from paper_agent.ui.markdown_exports import (
     MAX_BUNDLE_BYTES,
     embed_paper_images,
@@ -69,6 +69,99 @@ def build_markdown_bundle(result: PipelineResult, settings: Settings) -> tuple[d
     if benchmark and benchmark["run_id"] == str(result.run_id):
         downloads["benchmark.md"] = benchmark_to_markdown(benchmark["report"])
     return downloads, False
+
+
+def build_research_bundle(result: PipelineResult, settings: Settings) -> bytes:
+    """复用已落盘文件与已生成总结，合并整个候选池的 PDF 与 Markdown。"""
+    files, oversized = build_markdown_bundle(result, settings)
+    if oversized:
+        raise ValueError("研究资料总大小超过 200 MB，请在调试模式下分篇下载。")
+    total = sum(len(v.encode("utf-8") if isinstance(v, str) else v) for v in files.values())
+    for paper in download_pool(result):
+        pdf = load_paper_pdf(paper, settings.data_dir)
+        if pdf is None:
+            continue
+        total += len(pdf)
+        if total > MAX_BUNDLE_BYTES:
+            raise ValueError("研究资料总大小超过 200 MB，请在调试模式下分篇下载。")
+        filename = markdown_filename(paper.title, paper.paper_id, "paper")[:-3] + ".pdf"
+        files[f"pdfs/{filename}"] = pdf
+    return zip_markdown_files(files) if files else b""
+
+
+def render_home_download(result: PipelineResult | None, settings: Settings) -> None:
+    if (
+        result is None
+        or result.status not in {ProcessingStatus.SUCCEEDED, ProcessingStatus.PARTIAL}
+        or result.stage != PipelineStage.REPORTED
+    ):
+        return
+    with st.container(border=True, key="home_download"):
+        st.subheader("研究资料包")
+        st.caption("统一收录本轮已准备好的 PDF、全文 Markdown 与图片、单篇总结和综合报告。")
+        run_id = str(result.run_id)
+        stored = st.session_state.get("research_bundle")
+        if stored and stored["run_id"] != run_id:
+            st.session_state.pop("research_bundle", None)
+            stored = None
+        if stored:
+            st.download_button(
+                "下载全部资料（ZIP）",
+                stored["data"],
+                file_name=f"research_materials_{run_id}.zip",
+                mime="application/zip",
+                key=f"home_bundle_{run_id}",
+                use_container_width=True,
+            )
+        else:
+            if st.button(
+                "打包全部资料（PDF + Markdown）",
+                key="prepare_home_bundle",
+                use_container_width=True,
+            ):
+                try:
+                    with st.spinner("正在打包已有文件……"):
+                        content = build_research_bundle(result, settings)
+                    if content:
+                        st.session_state["research_bundle"] = {"run_id": run_id, "data": content}
+                        st.rerun()
+                    else:
+                        st.info("本轮尚无可下载文件。")
+                except ValueError as exc:
+                    st.warning(str(exc))
+
+
+def render_release_results(result: PipelineResult) -> None:
+    """发布视图直接阅读最终产出，不显示审计或流水线面板。"""
+    st.subheader("研究成果")
+    report_tab, papers_tab = st.tabs(["综合报告", "论文与总结"])
+    with report_tab:
+        if result.report and result.report.markdown.strip():
+            st.markdown(result.report.markdown)
+        else:
+            st.info("本轮暂无综合报告，可查看已整理的论文与总结。")
+    with papers_tab:
+        summaries = {s.paper_id: s for s in result.summaries}
+        for index, paper in enumerate(result.papers, 1):
+            with st.expander(f"{index:02d} · {paper.title}"):
+                st.caption(
+                    " · ".join(
+                        filter(
+                            None,
+                            [
+                                str(paper.year) if paper.year else None,
+                                ", ".join(a.name for a in paper.authors),
+                            ],
+                        )
+                    )
+                )
+                summary = summaries.get(paper.paper_id)
+                if summary:
+                    st.markdown(summary_to_markdown(summary, paper))
+                else:
+                    st.write(paper.abstract or "暂无摘要。")
+        if not result.papers:
+            st.info("本轮暂无最终论文。")
 
 
 def render_download_panel(result: PipelineResult, settings: Settings) -> None:

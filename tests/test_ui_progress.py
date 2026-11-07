@@ -28,6 +28,35 @@ from paper_agent.ui.progress import (
 APP = Path(__file__).resolve().parents[1] / "src/paper_agent/ui/app.py"
 
 
+def test_release_progress_counts_processed_papers_without_status_breakdown():
+    app = AppTest.from_string("""
+from datetime import UTC, datetime
+from uuid import uuid4
+from paper_agent.domain.models import PipelineStage, ProcessingStatus, StageEvent
+from paper_agent.ui.progress import PipelineProgress
+events = [StageEvent(stage=PipelineStage.DOWNLOADED, status=ProcessingStatus.RUNNING,
+                     started_at=datetime.now(UTC))]
+for status in [ProcessingStatus.SUCCEEDED, ProcessingStatus.FAILED, ProcessingStatus.SKIPPED]:
+    events.append(StageEvent(stage=PipelineStage.DOWNLOADED, status=status, scope="paper",
+                             paper_id=uuid4(), started_at=datetime.now(UTC)))
+PipelineProgress(None, compact=True).replay(events)
+""").run()
+    assert not app.exception
+    assert any("正在进行：论文下载" in item.value for item in app.markdown)
+    assert any("已处理 3 篇论文" in item.value for item in app.caption)
+    assert not app.button and not app.dataframe
+    text = "\n".join(item.value for item in [*app.markdown, *app.caption])
+    assert "成功" not in text and "失败" not in text and "跳过" not in text
+
+
+def debug_app(*args, **kwargs):
+    """Existing stage-detail checks explicitly exercise debug mode."""
+    app = AppTest.from_file(*args, **kwargs)
+    app.session_state["display_mode"] = "调试模式"
+    app.session_state["research_idea"] = "验证文献检索与总结"
+    return app
+
+
 def test_attempt_csv_exports_all_candidates_and_escapes_formula_titles():
     children = [
         StageEvent(
@@ -105,7 +134,7 @@ def test_page_displays_all_stage_results_and_retains_them_on_rerun(monkeypatch):
     agent = PaperResearchAgent(ResearchPipeline(build_demo_dependencies()))
     monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda: agent)
     st.cache_resource.clear()
-    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app = debug_app(str(APP), default_timeout=30).run()
     assert not app.exception
     app.button[0].click().run()
     assert not app.exception
@@ -149,7 +178,7 @@ def test_failed_page_keeps_successful_source_papers_and_shows_errors(monkeypatch
         "paper_agent.bootstrap.build_agent", lambda: PaperResearchAgent(ResearchPipeline(deps))
     )
     st.cache_resource.clear()
-    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app = debug_app(str(APP), default_timeout=30).run()
     app.button[0].click().run()
     assert not app.exception
     assert app.session_state["pipeline_result"].status.value == "failed"
@@ -170,7 +199,7 @@ def test_idle_navigator_shows_nine_pending_stages(monkeypatch):
     agent = PaperResearchAgent(ResearchPipeline(build_demo_dependencies()))
     monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda: agent)
     st.cache_resource.clear()
-    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app = debug_app(str(APP), default_timeout=30).run()
     buttons = [b for b in app.button if "_stage_" in (b.key or "")]
     assert len(buttons) == 9
     assert all(b.disabled and "待执行" in b.label for b in buttons)
@@ -195,7 +224,7 @@ def test_navigating_completed_stage_while_running_keeps_same_worker(monkeypatch)
     monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda: agent)
     st.cache_resource.clear()
     try:
-        app = AppTest.from_file(str(APP), default_timeout=30).run()
+        app = debug_app(str(APP), default_timeout=30).run()
         app.button[0].click().run()
         assert entered.wait(5)
         job = app.session_state["research_job"]
@@ -348,7 +377,7 @@ def test_download_and_conversion_stages_show_pool_and_per_paper_progress(monkeyp
     agent = PaperResearchAgent(ResearchPipeline(build_demo_dependencies()))
     monkeypatch.setattr("paper_agent.bootstrap.build_agent", lambda: agent)
     st.cache_resource.clear()
-    app = AppTest.from_file(str(APP), default_timeout=30).run()
+    app = debug_app(str(APP), default_timeout=30).run()
     app.button[0].click().run()
     assert not app.exception
     stage_buttons = [b for b in app.button if "_stage_" in (b.key or "")]
