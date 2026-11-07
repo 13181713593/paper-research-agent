@@ -28,6 +28,34 @@ from paper_agent.ui.progress import (
 APP = Path(__file__).resolve().parents[1] / "src/paper_agent/ui/app.py"
 
 
+def test_background_failure_logs_redacted_details_and_keeps_stage_results(monkeypatch, caplog):
+    from paper_agent.domain.models import PipelineRequest, ResearchIdea
+    from paper_agent.ui.research_job import ResearchJob
+
+    secret = "test-private-api-key"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+
+    class BrokenAgent:
+        async def research(self, request, event_sink):
+            await event_sink(
+                StageEvent(
+                    stage=PipelineStage.QUERY_PLANNED,
+                    status=ProcessingStatus.SUCCEEDED,
+                    started_at=datetime.now(UTC),
+                )
+            )
+            raise ValueError(f"Invalid provider response: {secret}")
+
+    job = ResearchJob(BrokenAgent(), PipelineRequest(idea=ResearchIdea(text="无人机导航")))
+    job._run()
+    events, result, error, done = job.snapshot()
+    assert done and result is None and events
+    assert "ValueError" in error
+    assert "Invalid provider response" in caplog.text
+    assert "[已隐藏]" in caplog.text
+    assert secret not in caplog.text
+
+
 def test_release_progress_counts_processed_papers_without_status_breakdown():
     app = AppTest.from_string("""
 from datetime import UTC, datetime

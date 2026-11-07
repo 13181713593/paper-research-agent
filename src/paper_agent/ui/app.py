@@ -48,9 +48,13 @@ st.markdown(
 
 
 @st.cache_resource
-def get_agent():
-    """Build the agent with source-level publication windows and newest-first retrieval."""
+def _get_agent_for_schema(schema_generation: int):
+    """Rebuild cached dependencies whenever the request model is reloaded."""
     return build_agent()
+
+
+def get_agent():
+    return _get_agent_for_schema(id(PipelineRequest))
 
 
 def store_research_result(result):

@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import traceback
 from threading import Lock, Thread
 
+from paper_agent.application.progress import redact_audit_value
 from paper_agent.domain.models import PipelineResult, StageEvent
+
+logger = logging.getLogger(__name__)
 
 
 class ResearchJob:
@@ -36,6 +41,7 @@ class ResearchJob:
             with self._lock:
                 self._result = result
         except Exception as exc:  # noqa: BLE001 - preserve UI history on worker failure
+            logger.error("Research task failed:\n%s", redact_audit_value(traceback.format_exc()))
             with self._lock:
                 self._error = f"研究任务未完成（{type(exc).__name__}），已产生的阶段结果仍可查看。"
         finally:

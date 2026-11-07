@@ -1,9 +1,12 @@
 import asyncio
+import runpy
 import unittest
 from dataclasses import replace
 
 from paper_agent.adapters import build_demo_dependencies
+from paper_agent.application.agent import PaperResearchAgent
 from paper_agent.application.pipeline import ResearchPipeline
+from paper_agent.domain import models
 from paper_agent.domain.models import PipelineRequest, ProcessingStatus, ResearchIdea
 
 
@@ -12,6 +15,24 @@ class FailingRetriever:
 
     async def search(self, plan):
         raise TimeoutError("simulated provider timeout")
+
+
+def test_cached_agent_accepts_request_from_reloaded_model_classes():
+    agent = PaperResearchAgent(ResearchPipeline(build_demo_dependencies()))
+    reloaded = runpy.run_path(models.__file__)
+    request = reloaded["PipelineRequest"](
+        idea=reloaded["ResearchIdea"](text="无人机导航与智能控制"),
+        top_k=1,
+        pre_rank_pool_size=1,
+    )
+    assert not isinstance(request, PipelineRequest)
+
+    result = asyncio.run(agent.research(request))
+
+    assert result.stage == models.PipelineStage.REPORTED
+    assert result.report and result.papers
+    assert isinstance(result.request, PipelineRequest)
+    assert result.request.model_dump() == request.model_dump()
 
 
 class PipelineTest(unittest.TestCase):

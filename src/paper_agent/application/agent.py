@@ -34,6 +34,10 @@ class PaperResearchAgent:
             ``PipelineResult`` with Top-k papers, summaries, report, stage
             timings, provenance, warnings, and partial/failure status.
         """
+        # Streamlit reloads can leave a cached pipeline holding the previous
+        # model classes. Rebuild the request from data at this boundary so the
+        # result validates against the same contract as the cached pipeline.
+        request = PipelineRequest.model_validate(request.model_dump(mode="python"))
         return await self._pipeline.run(request, event_sink=event_sink)
 
     def contract(self) -> PipelineContract:

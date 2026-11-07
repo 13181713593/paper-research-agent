@@ -52,7 +52,7 @@ CHANNEL_LABELS = {
 STATUS_LABELS = {
     ProcessingStatus.RUNNING: "⏳ 处理中",
     ProcessingStatus.SUCCEEDED: "✅ 已完成",
-    ProcessingStatus.PARTIAL: "⚠️ 已完成，存在降级或警告",
+    ProcessingStatus.PARTIAL: "已完成，存在降级或警告",
     ProcessingStatus.FAILED: "❌ 失败",
     ProcessingStatus.SKIPPED: "⏭️ 已排除",
 }
@@ -120,6 +120,19 @@ def conversion_row(index: int, event: StageEvent) -> dict:
 def is_legacy_empty_result(error):
     """Recognize old stored arXiv empty-query exceptions without hiding real failures."""
     return "arXiv query returned no results:" in (error or "")
+
+
+def source_display_status(source: StageEvent) -> ProcessingStatus:
+    attempts = source.details.get("query_results", [])
+    legacy_empty_only = (
+        source.status != ProcessingStatus.RUNNING
+        and any(is_legacy_empty_result(q.get("error")) for q in attempts)
+        and all(
+            q["status"] == "succeeded" or is_legacy_empty_result(q.get("error"))
+            for q in attempts
+        )
+    )
+    return ProcessingStatus.SUCCEEDED if legacy_empty_only else source.status
 
 
 def query_result_row(query):
@@ -310,7 +323,7 @@ class PipelineProgress:
         )
         labels = {
             ProcessingStatus.SUCCEEDED: "✅ 已完成",
-            ProcessingStatus.PARTIAL: "⚠️ 已完成 · 有警告",
+            ProcessingStatus.PARTIAL: "✅ 已完成",
             ProcessingStatus.RUNNING: "🔵 进行中",
             ProcessingStatus.FAILED: "❌ 失败",
             ProcessingStatus.SKIPPED: "⏭️ 已跳过",
@@ -509,6 +522,14 @@ class PipelineProgress:
 
             children = list(self.children[name].values())
             if name == PipelineStage.RETRIEVED:
+                source_order = {
+                    ProcessingStatus.SUCCEEDED: 0,
+                    ProcessingStatus.PARTIAL: 1,
+                    ProcessingStatus.RUNNING: 2,
+                    ProcessingStatus.SKIPPED: 3,
+                    ProcessingStatus.FAILED: 4,
+                }
+                children.sort(key=lambda source: source_order[source_display_status(source)])
                 done = sum(c.status != ProcessingStatus.RUNNING for c in children)
                 if children:
                     st.caption(
@@ -518,18 +539,7 @@ class PipelineProgress:
                 for source in children:
                     with st.container(border=True):
                         source_label = SOURCE_LABELS.get(source.source_name, source.source_name)
-                        attempts = source.details.get("query_results", [])
-                        legacy_empty_only = (
-                            source.status != ProcessingStatus.RUNNING
-                            and any(is_legacy_empty_result(q.get("error")) for q in attempts)
-                            and all(
-                                q["status"] == "succeeded" or is_legacy_empty_result(q.get("error"))
-                                for q in attempts
-                            )
-                        )
-                        source_status = (
-                            ProcessingStatus.SUCCEEDED if legacy_empty_only else source.status
-                        )
+                        source_status = source_display_status(source)
                         st.markdown(f"**{source_label}** · {STATUS_LABELS[source_status]}")
                         if source.details.get("demo"):
                             st.caption("演示数据库适配器，以下为示例文献。")

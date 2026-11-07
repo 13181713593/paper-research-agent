@@ -238,6 +238,9 @@ def test_production_ui_runs_real_offline_chain(production_fixture, monkeypatch, 
             app.run()
             app.text_area(key="research_idea").set_value("scientific evidence summarization").run()
             app.button[0].click().run()
+            if "research_job" in app.session_state:
+                app.session_state["research_job"]._thread.join(timeout=20)
+                app.run()
         assert not app.exception
         result = app.session_state["pipeline_result"]
         assert result.status == ProcessingStatus.PARTIAL  # 默认 Top-k=5，夹具只有一篇。
