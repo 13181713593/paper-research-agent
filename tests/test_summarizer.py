@@ -35,7 +35,7 @@ GOOD_PAYLOAD = {
     "contributions": ["Evidence-linked summaries"],
     "limitations": ["OCR quality is a bottleneck"],
     "relevance_to_idea": "Directly matches the idea.",
-    "evidence": [{"section": "Abstract", "page": 1, "quote": "x" * 600}],
+    "evidence": [{"section": "Abstract", "quote": "We introduce a system for summarizing scientific papers."}],
 }
 
 
@@ -159,7 +159,8 @@ class SummarizerTest(unittest.TestCase):
         self.assertIn("Encoder and decoder stacks.", summary.method)
         self.assertIn("We presented the Transformer.", summary.contributions[0])
         sections = {ref.section for ref in summary.evidence}
-        self.assertEqual(sections, {"abstract", "method", "conclusion"})
+        self.assertTrue({"abstract", "method", "conclusion"}.issubset(sections))
+        self.assertNotIn("references", sections)
 
 
 if __name__ == "__main__":

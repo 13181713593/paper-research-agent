@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import UUID
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from paper_agent.adapters.llm_report_writer import publication_note
 from paper_agent.adapters.markdown_parser import IMAGE_LINK, MAX_IMAGE_BYTES, safe_asset_name
 from paper_agent.domain.models import Paper, PaperSummary
 
@@ -193,6 +194,8 @@ def summary_to_markdown(
     source = "基于全文" if summary.generated_from_fulltext else "仅基于摘要降级生成"
     lines = [f"# {title} — 单篇论文总结", "", f"> 材料来源：{source}", ""]
     if paper:
+        if publication_note(paper):
+            lines.append(f"- 文献类型：{publication_note(paper)}")
         if paper.authors:
             lines.append(f"- 作者：{'、'.join(author.name for author in paper.authors)}")
         if paper.year:
@@ -205,6 +208,10 @@ def summary_to_markdown(
     sections = [
         ("核心问题", summary.core_problem),
         ("方法", summary.method),
+        ("架构与层级", summary.architecture),
+        ("资源分配与卸载策略", summary.resource_allocation),
+        ("资源约束", "；".join(summary.resource_constraints)),
+        ("评价指标", "；".join(summary.evaluation_metrics)),
         ("实验", summary.experiments),
         ("贡献", "\n".join(f"- {item}" for item in summary.contributions)),
         ("局限", "\n".join(f"- {item}" for item in summary.limitations)),

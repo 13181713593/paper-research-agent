@@ -176,9 +176,9 @@ def test_three_groups_end_to_end(production_fixture, source_fails, fulltext_fail
             )
         )
     )
-    expected_status = (
-        ProcessingStatus.PARTIAL if source_fails or fulltext_fails else (ProcessingStatus.SUCCEEDED)
-    )
+    # No model is configured in this offline integration fixture. A generated
+    # extractive report must remain partial even when retrieval/download succeed.
+    expected_status = ProcessingStatus.PARTIAL
     assert result.status == expected_status, result.warnings
     assert [e.stage.value for e in result.events] == [
         "query_planned",
@@ -208,7 +208,9 @@ def test_three_groups_end_to_end(production_fixture, source_fails, fulltext_fail
     assert summary.evidence and all(e.paper_id == paper.paper_id for e in summary.evidence)
     assert result.report.paper_ids == [paper.paper_id]
     assert "参考文献" in result.report.markdown
-    assert 1000 <= len("".join(result.report.executive_summary.split())) <= 1500
+    assert 0 < len("".join(result.report.executive_summary.split())) <= 1500
+    assert result.report.generation_method == "extractive"
+    assert result.report.quality_notes
     assert any("Crossref" in warning for warning in result.warnings) == source_fails
     assert any("abstract fallback" in warning for warning in result.warnings) == fulltext_fails
     if fulltext_fails:

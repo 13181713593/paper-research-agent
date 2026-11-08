@@ -12,10 +12,14 @@ Conventions from docs/API_CONTRACTS.md:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import random
 import threading
 import time
+from collections import OrderedDict
+from copy import deepcopy
 from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -50,6 +54,14 @@ _HOST_LOCK = threading.Lock()
 _HOST_COOLDOWNS: dict[str, float] = {}
 _HOST_NEXT: dict[str, float] = {}
 _HOST_FAILURES: dict[str, ProviderError] = {}
+_RESPONSE_CACHE: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+_CACHE_HOSTS = {
+    "api.crossref.org",
+    "api.openalex.org",
+    "api.semanticscholar.org",
+    "www.ebi.ac.uk",
+    "api2.openreview.net",
+}
 
 
 def _retry_after(response: Any, fallback: float) -> float:
@@ -88,12 +100,7 @@ def _retry_after(response: Any, fallback: float) -> float:
 def _host_gate(host, deadline):
     """Reserve a request slot and share cooldowns across simultaneous app sessions."""
     # Public services only; injected unit-test endpoints have no pacing policy.
-    interval = (
-        1.0
-        if host
-        in {"api.crossref.org", "api.openalex.org", "api.semanticscholar.org", "www.ebi.ac.uk"}
-        else 0.0
-    )
+    interval = 1.0 if host in _CACHE_HOSTS else 0.0
     while True:
         with _HOST_LOCK:
             now = time.monotonic()
@@ -131,6 +138,18 @@ def http_get_json(
     """
     deadline = time.monotonic() + remaining_time(total_timeout)
     host = urlsplit(url).netloc
+    # Hash the complete request (including identity) so keys never appear in
+    # cache identifiers and authenticated/anonymous responses cannot mix.
+    cache_key = hashlib.sha256(
+        json.dumps([url, params, headers], sort_keys=True, default=str).encode()
+    ).hexdigest()
+    if host in _CACHE_HOSTS:
+        with _HOST_LOCK:
+            cached = _RESPONSE_CACHE.get(cache_key)
+            if cached and cached[0] > time.monotonic():
+                _RESPONSE_CACHE.move_to_end(cache_key)
+                return deepcopy(cached[1])
+            _RESPONSE_CACHE.pop(cache_key, None)
     for attempt in range(max_retries + 1):
         _host_gate(host, deadline)
         remaining = remaining_time(deadline - time.monotonic())
@@ -153,7 +172,16 @@ def http_get_json(
             try:
                 if response.status_code == 200:
                     try:
-                        return response.json()
+                        data = response.json()
+                        if host in _CACHE_HOSTS:
+                            with _HOST_LOCK:
+                                _RESPONSE_CACHE[cache_key] = (
+                                    time.monotonic() + 300,
+                                    deepcopy(data),
+                                )
+                                while len(_RESPONSE_CACHE) > 32:
+                                    _RESPONSE_CACHE.popitem(last=False)
+                        return data
                     except ValueError as exc:
                         raise ProviderResponseError("Provider returned invalid JSON") from exc
                 if response.status_code == 429:

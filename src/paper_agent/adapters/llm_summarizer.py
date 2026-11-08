@@ -23,10 +23,16 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from paper_agent.adapters.llm_client import ChatClient, extract_json_object
 from paper_agent.adapters.markdown_parser import _canonical_section, split_sections
+from paper_agent.adapters.source_evidence import (
+    evidence_passages,
+    extract_abstract,
+    matching_sentences,
+    quote_in_source,
+)
 from paper_agent.domain.errors import ProviderUnavailableError
 from paper_agent.domain.models import EvidenceRef, Paper, PaperSummary, ResearchIdea
 
-PROMPT_VERSION = "group3-summary-v1"
+PROMPT_VERSION = "group3-summary-v2"
 MAX_QUOTE_CHARS = 500
 NOT_STATED = "材料中未明确说明。"
 _EVIDENCE_MISSING = "无法获取摘要或全文，未生成实质性总结。"
@@ -121,6 +127,10 @@ class _SummaryPayload(BaseModel):
     limitations: list[str] = Field(default_factory=list)
     relevance_to_idea: str = ""
     evidence: list[Any] = Field(default_factory=list)
+    architecture: str = NOT_STATED
+    resource_allocation: str = NOT_STATED
+    resource_constraints: list[str] = Field(default_factory=list)
+    evaluation_metrics: list[str] = Field(default_factory=list)
 
 
 class LlmSummarizer:
@@ -160,6 +170,8 @@ class LlmSummarizer:
             if path.exists():
                 text = await asyncio.to_thread(path.read_text, "utf-8", "replace")
                 if text.strip():
+                    if not paper.abstract:
+                        paper.abstract = extract_abstract(text)
                     return _drop_references(text), True
         if paper.abstract and paper.abstract.strip():
             return paper.abstract.strip(), False
@@ -195,17 +207,20 @@ class LlmSummarizer:
         self, idea: ResearchIdea, paper: Paper, text: str, from_fulltext: bool
     ) -> PaperSummary:
         source_label = "已解析全文（Markdown）" if from_fulltext else "仅有摘要"
+        passages = evidence_passages(text, self._max_input_chars)
+        annotated = "\n\n".join(f"[{key}] {value}" for key, value in passages.items())
         system = (
             "你是严谨的学术文献分析助手。只依据给定材料作答，"
             "不得虚构材料中不存在的实验设置、数据或结论；"
             "材料未覆盖的字段填写“材料中未明确说明。”；"
+            "每个实质性字段必须有对应原文证据，不得把其他论文的参考文献当成本文方法。"
             "只输出一个 JSON 对象，不要输出任何多余文字。"
         )
         user = (
             f"研究想法：{idea.text}\n\n"
             f"论文题目：{paper.title}\n"
             f"证据来源：{source_label}\n\n"
-            f"材料：\n{_truncate_middle(text, self._max_input_chars)}\n\n"
+            f"材料（方括号是原文片段编号，不属于原文）：\n{annotated}\n\n"
             "请输出如下 JSON（字段含义：core_problem 核心问题；method 方法；"
             "experiments 实验/评估；contributions 主要贡献列表；limitations 局限列表；"
             "relevance_to_idea 与该研究想法的相关性；evidence 证据列表，"
@@ -214,7 +229,13 @@ class LlmSummarizer:
             '{"core_problem": "...", "method": "...", "experiments": "...", '
             '"contributions": ["..."], "limitations": ["..."], '
             '"relevance_to_idea": "...", '
-            '"evidence": [{"section": "Abstract", "page": 1, "quote": "..."}]}'
+            '"evidence": [{"source_id": "E001", "section": "Abstract"}]}'
+            "\n另外输出 architecture（架构及层级）、resource_allocation（资源分配与卸载策略）、"
+            "resource_constraints（约束列表）、evaluation_metrics（指标列表）。"
+            "只填材料中明确出现的内容；非资源调度主题不适用时填材料中未明确说明。"
+            "evidence 请选3至8个能支持上述分析的原文 source_id，程序会提取对应原文。"
+            "不能编造不存在的编号，不要自行改写或翻译 quote。"
+            "材料没有明确页码时不要填写 page。"
         )
         raw = await self._client.complete(  # type: ignore[union-attr]
             [
@@ -228,6 +249,17 @@ class LlmSummarizer:
             payload.core_problem.strip() or payload.method.strip() or payload.experiments.strip()
         ):
             raise ValueError("LLM summary payload is empty")
+        source_items = []
+        for item in payload.evidence:
+            if isinstance(item, dict) and item.get("source_id") in passages:
+                source_items.append({**item, "quote": passages[item["source_id"]], "page": None})
+            else:
+                source_items.append(item)
+        evidence = self._to_evidence(paper, source_items)
+        if not evidence or any(
+            not ref.quote or not quote_in_source(ref.quote, text) for ref in evidence
+        ):
+            raise ValueError("LLM evidence quote is missing or not present in source")
         return PaperSummary(
             paper_id=paper.paper_id,
             core_problem=payload.core_problem or NOT_STATED,
@@ -236,8 +268,13 @@ class LlmSummarizer:
             contributions=[item for item in payload.contributions if item.strip()],
             limitations=[item for item in payload.limitations if item.strip()],
             relevance_to_idea=payload.relevance_to_idea or NOT_STATED,
-            evidence=self._to_evidence(paper, payload.evidence),
+            evidence=evidence,
             generated_from_fulltext=from_fulltext,
+            generation_method="model",
+            architecture=payload.architecture,
+            resource_allocation=payload.resource_allocation,
+            resource_constraints=payload.resource_constraints,
+            evaluation_metrics=payload.evaluation_metrics,
         )
 
     # ----------------------------------------------------- extractive path
@@ -257,6 +294,7 @@ class LlmSummarizer:
                 relevance_to_idea=_EVIDENCE_MISSING,
                 evidence=[],
                 generated_from_fulltext=False,
+                generation_method="no_evidence",
             )
         if from_fulltext:
             sections = split_sections(text)
@@ -270,9 +308,47 @@ class LlmSummarizer:
                     return value
             return ""
 
-        core = _first_sentences(pick("abstract", "introduction", "body")) or NOT_STATED
-        method = _first_sentences(pick("method")) or NOT_STATED
-        experiments = _first_sentences(pick("experiments", "analysis")) or NOT_STATED
+        core = (
+            _first_sentences(
+                paper.abstract or extract_abstract(text) or pick("abstract", "introduction", "body")
+            )
+            or NOT_STATED
+        )
+        method = (
+            matching_sentences(
+                pick("method") or text,
+                r"\b(?:we|this (?:paper|study|work))\s+(?:propose|present|introduce|develop|formulate|design)"
+                r"|proposed (?:method|scheme|framework|algorithm)|提出|采用|设计",
+            )
+            or _first_sentences(pick("method"))
+            or NOT_STATED
+        )
+        experiments = (
+            matching_sentences(
+                pick("experiments", "analysis") or text,
+                r"(?:evaluation|simulation|experiment|result).*(?:show|demonstrate|compar|conduct)"
+                r"|we evaluate|实验|仿真",
+            )
+            or _first_sentences(pick("experiments", "analysis"))
+            or NOT_STATED
+        )
+        architecture_material = paper.abstract or extract_abstract(text) or pick("method") or text
+        architecture = (
+            matching_sentences(
+                architecture_material,
+                r"\b(?:architecture|hierarchical|tri-tier|three-tier|continuum)\b|架构",
+                1,
+            )
+            or NOT_STATED
+        )
+        allocation = (
+            matching_sentences(
+                architecture_material,
+                r"\b(?:resource allocation|offloading (?:scheme|strategy|decision|algorithm))\b|资源分配|任务卸载",
+                1,
+            )
+            or NOT_STATED
+        )
         conclusion_text = pick("conclusion", "discussion")
         contributions = [
             sentence[:300]
@@ -316,6 +392,16 @@ class LlmSummarizer:
                     quote=re.sub(r"\s+", " ", value).strip()[:200] or None,
                 )
             )
+        for name, value in (
+            ("method", method),
+            ("experiments", experiments),
+            ("architecture", architecture),
+            ("resource_allocation", allocation),
+        ):
+            if value != NOT_STATED and quote_in_source(value[:480], text):
+                evidence.append(
+                    EvidenceRef(paper_id=paper.paper_id, section=name, quote=value[:480])
+                )
         return PaperSummary(
             paper_id=paper.paper_id,
             core_problem=core,
@@ -326,4 +412,7 @@ class LlmSummarizer:
             relevance_to_idea=relevance,
             evidence=evidence,
             generated_from_fulltext=from_fulltext,
+            generation_method="extractive",
+            architecture=architecture,
+            resource_allocation=allocation,
         )

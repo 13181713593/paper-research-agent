@@ -73,7 +73,7 @@ def test_report_degrades_without_any_model_key(tmp_path):
 
 def test_main_exit_codes(tmp_path, capsys):
     setup_env = load_setup_env()
-    env_path = tmp_path / ".env"
+    env_path = tmp_path / "absent.env"
 
     assert setup_env.main(["--env", str(env_path)]) == 2
     assert "未找到" in capsys.readouterr().out

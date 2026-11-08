@@ -14,12 +14,16 @@ def isolated_runtime(tmp_path, monkeypatch, request):
     monkeypatch.setattr(_retriever_utils, "_HOST_COOLDOWNS", {})
     monkeypatch.setattr(_retriever_utils, "_HOST_NEXT", {})
     monkeypatch.setattr(_retriever_utils, "_HOST_FAILURES", {})
+    monkeypatch.setattr(_retriever_utils, "_RESPONSE_CACHE", _retriever_utils.OrderedDict())
     # 付费冒烟仍须独立设置开关并显式注入凭证，不自动读取开发者 .env。
     paid_smoke = (
         request.node.name == "test_live_llm_summary_and_report_without_fallback"
         and os.getenv("RUN_LLM_SMOKE") == "1"
     )
     monkeypatch.chdir(tmp_path)
+    # The application can fall back to the source checkout's .env. An empty
+    # working-directory file prevents offline tests loading real local config.
+    (tmp_path / ".env").touch()
     if not paid_smoke:
         for key in tuple(os.environ):
             if key.startswith("PAPER_AGENT_") or key in {

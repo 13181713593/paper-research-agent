@@ -213,8 +213,8 @@ async def test_review_checks_length_and_retries_short_model_output():
     body = (
         "本次研究围绕场景文本检测与识别展开，已有文献提供了不同的方法描述与证据范围。"
         "当前材料仅支持比较研究问题，无法核实统一数据集上的实验结果。"
-    ) * 5
-    body = body[:390] + "[1]"
+    ) * 20
+    body = body[:1200] + "[1]"
 
     class Client:
         calls = 0
@@ -229,13 +229,15 @@ async def test_review_checks_length_and_retries_short_model_output():
     )
     assert client.calls == 2
     assert 1000 <= review_length(report.executive_summary) <= 1500
+    assert report.generation_method == "model"
     assert "参考文献" in report.markdown
 
 
 @pytest.mark.asyncio
 async def test_offline_review_is_bounded_and_honest_about_missing_evidence():
     report = await ShortReviewWriter().write(IDEA, [Paper(title="Scene text detection")], [])
-    assert 1000 <= review_length(report.executive_summary) <= 1500
+    assert 0 < review_length(report.executive_summary) < 1000
+    assert report.generation_method == "extractive"
     assert "缺少足够材料" in report.executive_summary
     assert "抽取式模板" in report.markdown
 

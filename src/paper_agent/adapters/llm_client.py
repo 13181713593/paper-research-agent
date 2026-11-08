@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from paper_agent.adapters.tls import verified_context
 from paper_agent.domain.errors import ProviderUnavailableError
 
 
@@ -58,7 +59,7 @@ class OpenAiCompatibleChatClient:
         }
         try:
             async with httpx.AsyncClient(
-                timeout=self._timeout, transport=self._transport
+                timeout=self._timeout, transport=self._transport, verify=verified_context()
             ) as client:
                 response = await client.post(
                     f"{self._base_url}/chat/completions", json=payload, headers=headers

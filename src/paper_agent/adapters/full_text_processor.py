@@ -392,6 +392,14 @@ class PdfFullTextProcessor:
                 }
             )
         paper.fulltext.markdown_path = str(markdown_path)
+        if not paper.abstract:
+            from paper_agent.adapters.source_evidence import extract_abstract
+
+            try:
+                text = await asyncio.to_thread(Path(markdown_path).read_text, "utf-8")
+                paper.abstract = extract_abstract(text)
+            except (OSError, UnicodeError):
+                pass
         try:
             meta = json.loads(Path(markdown_path).with_suffix(".parse.json").read_text("utf-8"))
             paper.fulltext.parse_warnings = [str(w) for w in meta.get("warnings", [])]

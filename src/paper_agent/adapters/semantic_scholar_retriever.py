@@ -65,12 +65,13 @@ class SemanticScholarRetriever:
                 f"{(filters or {}).get('date_from') or ''}:{(filters or {}).get('date_to') or ''}"
             )
         if sort_by == "publication_date":
-            # `/paper/search` truncates server-side to `limit`; the bulk endpoint
-            # ignores `limit` and returns a fixed batch (up to 1000), which would
-            # over-fetch a small quota by an order of magnitude.
+            # Sorting is only supported by the bulk endpoint. It returns a
+            # fixed batch; cap the data locally without sending unsupported
+            # `limit` or silently pretending relevance results are newest-first.
+            params.pop("limit")
             params["sort"] = "publicationDate:desc"
-        return http_get_json(
-            _API_URL,
+        payload = http_get_json(
+            _API_URL + "/bulk" if sort_by == "publication_date" else _API_URL,
             params=params,
             headers=headers,
             timeout=self.timeout,
@@ -78,6 +79,9 @@ class SemanticScholarRetriever:
             initial_backoff=1.0,
             max_retry_after=5.0,
         )
+        if sort_by == "publication_date" and isinstance(payload, dict):
+            payload = {**payload, "data": (payload.get("data") or [])[: max(1, min(limit, 100))]}
+        return payload
 
     def _to_papers(self, payload: Any) -> list[Paper]:
         if not payload:

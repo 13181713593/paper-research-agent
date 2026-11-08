@@ -623,6 +623,7 @@ class ResearchPipeline:
                 len(final_papers),
                 component=self.deps.report_writer,
             )
+            warnings.extend(report.quality_notes)
             status = ProcessingStatus.PARTIAL if warnings else ProcessingStatus.SUCCEEDED
             return PipelineResult(
                 status=status,

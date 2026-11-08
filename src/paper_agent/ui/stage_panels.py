@@ -134,6 +134,13 @@ def render_home_download(result: PipelineResult | None, settings: Settings) -> N
 def render_release_results(result: PipelineResult) -> None:
     """发布视图直接阅读最终产出，不显示审计或流水线面板。"""
     st.subheader("研究成果")
+    if result.report:
+        for note in result.report.quality_notes:
+            st.warning(note)
+    if result.warnings:
+        with st.expander(f"本轮来源与全文获取提示（{len(result.warnings)} 条）"):
+            for warning in result.warnings:
+                st.caption(warning)
     report_tab, papers_tab = st.tabs(["综合报告", "论文与总结"])
     with report_tab:
         if result.report and result.report.markdown.strip():
@@ -498,7 +505,10 @@ def render_summaries_panel(result: PipelineResult, settings: Settings) -> None:
 
 def render_report_panel(result: PipelineResult) -> None:
     """09 综合报告：报告正文、下载与运行审计。"""
-    st.caption("1000–1500字中文综述：整合方法路线、已有证据与局限，参考文献另列，不计入正文字数。")
+    if result.report and result.report.generation_method == "extractive":
+        st.caption("当前为材料摘录与证据对照，尚未生成模型综述；不通过填充文字冒充完整分析。")
+    else:
+        st.caption("1000–1500字中文综述：整合方法路线、已有证据与局限，参考文献另列，不计入正文字数。")
     if result.report and result.report.markdown.strip():
         st.download_button(
             "下载综合报告 Markdown",

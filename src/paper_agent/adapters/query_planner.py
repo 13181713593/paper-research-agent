@@ -207,7 +207,15 @@ class HeuristicQueryPlanner:
                 # directly instead of the combined variants, so qualifiers like
                 # "edge computing" stay searchable without AND collapse or
                 # dropped qualifiers.
-                terms = [(c, "en") for c in english]
+                # LLM concepts are combined with the offline lexicon. Bound
+                # Boolean-source requests so their union cannot exhaust the
+                # source budget before reaching the important alternatives.
+                phrase_limit = 3 if chinese_term else 4
+                terms = [(c, "en") for c in english[:phrase_limit]]
+                for omitted in english[phrase_limit:]:
+                    term_notes.setdefault(
+                        omitted, "未单独请求布尔来源：每个来源最多4个核心短语；仍用于相关性排序"
+                    )
                 if chinese_term:
                     terms.append((chinese_term, "zh" if chinese else "en"))
                 if not terms:

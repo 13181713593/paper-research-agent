@@ -29,6 +29,7 @@ from uuid import uuid4
 
 import httpx
 
+from paper_agent.adapters.tls import verified_context
 from paper_agent.domain.errors import NoOpenAccessCopyError, ProviderUnavailableError
 from paper_agent.domain.models import Paper
 
@@ -88,6 +89,7 @@ class HttpPdfDownloader:
         loop = asyncio.get_running_loop()
         if self._client is None or self._client_loop is not loop:
             self._client = httpx.AsyncClient(
+                verify=verified_context(),
                 timeout=httpx.Timeout(self._timeout, connect=min(15.0, self._timeout)),
                 headers={"User-Agent": self._user_agent, "Accept": "application/pdf,*/*"},
                 transport=self._transport,

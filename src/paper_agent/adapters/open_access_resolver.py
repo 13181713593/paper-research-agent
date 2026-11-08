@@ -23,6 +23,7 @@ from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
+from paper_agent.adapters.tls import verified_context
 from paper_agent.domain.errors import NoOpenAccessCopyError, ProviderUnavailableError
 from paper_agent.domain.models import AccessStatus, Paper
 
@@ -91,6 +92,7 @@ class UnpaywallResolver:
         loop = asyncio.get_running_loop()
         if self._client is None or self._client_loop is not loop:
             self._client = httpx.AsyncClient(
+                verify=verified_context(),
                 timeout=min(self._timeout, 15),
                 max_redirects=5,
                 transport=self._transport,
@@ -286,6 +288,15 @@ class UnpaywallResolver:
             base_id = re.sub(r"v\d+$", "", paper.arxiv_id.strip())
             if base_id:
                 candidates.append(f"https://arxiv.org/pdf/{quote(base_id)}")
+        # SciTePress exposes some public PDFs only through an ASP.NET postback.
+        # Its conference DOI encodes the paper id. Treat this as a candidate,
+        # not proof of availability: the downloader must still validate the PDF.
+        scitepress = re.fullmatch(r"10\.5220/(\d{8})\d{8}", paper.doi or "")
+        if scitepress and paper.year and paper.is_open_access is not False:
+            paper_id = str(int(scitepress[1]))
+            candidates.append(
+                f"https://www.scitepress.org/Papers/{paper.year}/{paper_id}/{paper_id}.pdf"
+            )
         for landing in [
             paper.landing_page_url,
             paper.open_access_url,
@@ -388,6 +399,15 @@ class UnpaywallResolver:
                 else:
                     parser = _PdfLinks(str(response.url))
                     parser.feed(content.decode("utf-8", errors="replace"))
+                    if not paper.abstract and parser.abstract:
+                        paper.abstract = parser.abstract
+                        self._record(
+                            paper,
+                            "abstract",
+                            "succeeded",
+                            url=str(response.url),
+                            reason="从论文落地页补充摘要",
+                        )
                     paper.fulltext.candidate_urls.extend(parser.urls[:5])
                     candidate_count = len(parser.urls[:5])
                     viewer_urls = parser.viewer_urls[:5]
@@ -489,6 +509,15 @@ class _PdfLinks(HTMLParser):
         self._anchor = None
         self._anchor_text = []
         self._anchor_pdf = False
+        self._abstract_parts = []
+        self._abstract_depth = 0
+        self._abstract_meta = ""
+
+    @property
+    def abstract(self):
+        text = self._abstract_meta or " ".join(self._abstract_parts)
+        text = re.sub(r"^abstract\s*[:：]?\s*", "", " ".join(text.split()), flags=re.IGNORECASE)
+        return text[:12000] if len(text) >= 60 else None
 
     @property
     def urls(self):
@@ -504,6 +533,20 @@ class _PdfLinks(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
+        if tag == "meta" and (attrs.get("name") or attrs.get("property") or "").lower() in {
+            "citation_abstract",
+            "dc.description",
+            "dcterms.abstract",
+        }:
+            self._abstract_meta = attrs.get("content") or ""
+        if self._abstract_depth and tag not in {"br", "img", "meta", "input", "hr", "link"}:
+            self._abstract_depth += 1
+        elif tag in {"div", "span", "section", "p"} and re.search(
+            r"(?:^|[_\s-])(?:abstract|moreabstract|lessabstract)$",
+            ((attrs.get("id") or "") + " " + (attrs.get("class") or "")).strip(),
+            re.IGNORECASE,
+        ):
+            self._abstract_depth = 1
         mime = (attrs.get("type") or "").lower().split(";", 1)[0].strip()
         if tag == "meta" and (attrs.get("name") or "").lower() in {
             "citation_pdf_url",
@@ -526,10 +569,14 @@ class _PdfLinks(HTMLParser):
                 self._add(value, priority=1)
 
     def handle_data(self, data):
+        if self._abstract_depth:
+            self._abstract_parts.append(data)
         if self._anchor is not None:
             self._anchor_text.append(data)
 
     def handle_endtag(self, tag):
+        if self._abstract_depth and tag not in {"br", "img", "meta", "input", "hr", "link"}:
+            self._abstract_depth -= 1
         if tag == "a" and self._anchor is not None:
             label = " ".join(" ".join(self._anchor_text).split()).lower()
             non_paper = re.search(

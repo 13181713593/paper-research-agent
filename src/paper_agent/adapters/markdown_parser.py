@@ -41,7 +41,7 @@ from paper_agent.domain.errors import FullTextParseError, ProviderUnavailableErr
 MINERU_DEFAULT_BASE_URL = "https://mineru.net/api/v4"
 #: Bump whenever text-to-Markdown or heading rules change; cached Markdown
 #: produced by an older converter is then re-generated.
-CONVERTER_VERSION = "group3-md-v3"
+CONVERTER_VERSION = "group3-md-v4"
 MAX_RESULT_ZIP_BYTES = 50_000_000
 MAX_RESULT_BYTES = 100_000_000
 MAX_IMAGE_BYTES = 10_000_000

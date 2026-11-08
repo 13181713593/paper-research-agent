@@ -97,7 +97,7 @@ def build_processing_components(
     return ProcessingComponents(
         fulltext_processor=processor,
         summarizer=LlmSummarizer(chat_client=llm_client),
-        report_writer=ShortReviewWriter(chat_client=llm_client),
+        report_writer=ShortReviewWriter(chat_client=llm_client, max_llm_attempts=3),
     )
 
 

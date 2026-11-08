@@ -142,7 +142,7 @@ with st.sidebar:
         }
         st.info(mode_descriptions.get(settings.app_env, f"未知模式：{settings.app_env}"))
         if settings.app_env in {"retrieval", "production"}:
-            if (os.getenv("PAPER_AGENT_LLM_API_KEY") or "").strip():
+            if (os.getenv("PAPER_AGENT_LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip():
                 st.caption(f"查询规划已配置模型 {settings.llm_model}；调用失败时使用启发式规划。")
             else:
                 st.caption("未配置查询规划 API：使用启发式规划，中文查询建议补充英文关键词。")

@@ -71,6 +71,15 @@ def _dump_summaries_for_prompt(papers: Sequence[Paper], summaries: Sequence[Pape
     return json.dumps(entries, ensure_ascii=False, indent=2)
 
 
+def publication_note(paper: Paper) -> str:
+    doi = (paper.doi or "").lower()
+    if doi.startswith("10.21203/"):
+        return "Research Square 预印本，同行评审状态本次未核验"
+    if doi.startswith("10.48550/arxiv.") or (paper.arxiv_id and not paper.doi):
+        return "arXiv 仓储/预印本版本，同行评审状态本次未核验"
+    return ""
+
+
 def comparison_markdown(papers: Sequence[Paper], summaries: Sequence[PaperSummary]) -> str:
     """从结构化总结生成横向对照表，不额外推断共识或实验结论。"""
     registry = {summary.paper_id: summary for summary in summaries}
@@ -85,18 +94,26 @@ def comparison_markdown(papers: Sequence[Paper], summaries: Sequence[PaperSummar
         "",
         "> 以下仅归纳已有总结；表格长字段节选展示，完整内容见单篇总结。",
         "",
-        "| 论文 | 材料来源 | 方法 | 实验/评估 | 局限 | 引文数（未核验） |",
-        "| --- | --- | --- | --- | --- | ---: |",
+        "| 论文 | 材料来源 | 架构/层级 | 分配与卸载策略 | 资源约束 | 方法 | 实验/指标 | 局限 | 引文数（未核验） |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | ---: |",
     ]
     for paper in papers:
         summary = registry.get(paper.paper_id)
         if summary is None:
-            lines.append(f"| {cell(paper.title)} | 未生成总结 | — | — | — | 0 |")
+            lines.append(f"| {cell(paper.title)} | 未生成总结 | — | — | — | — | — | — | 0 |")
             continue
-        source = "全文" if summary.generated_from_fulltext else "仅摘要（降级）"
+        source = (
+            "全文"
+            if summary.generated_from_fulltext
+            else "仅摘要（降级）"
+            if paper.abstract
+            else "仅题录，无实质性证据"
+        )
         lines.append(
-            f"| {cell(paper.title)} | {source} | {cell(summary.method)} | "
-            f"{cell(summary.experiments)} | {cell('；'.join(summary.limitations) or '未明确说明')} | "
+            f"| {cell(paper.title)} | {source} | {cell(summary.architecture)} | "
+            f"{cell(summary.resource_allocation)} | {cell('；'.join(summary.resource_constraints) or '未明确说明')} | "
+            f"{cell(summary.method)} | {cell(summary.experiments + '；' + '；'.join(summary.evaluation_metrics))} | "
+            f"{cell('；'.join(summary.limitations) or '未明确说明')} | "
             f"{len(summary.evidence)} |"
         )
     return "\n".join(lines) + "\n"

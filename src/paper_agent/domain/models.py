@@ -270,6 +270,11 @@ class PaperSummary(StrictModel):
     relevance_to_idea: str
     evidence: list[EvidenceRef] = Field(default_factory=list)
     generated_from_fulltext: bool
+    generation_method: str = "unknown"
+    architecture: str = "材料中未明确说明。"
+    resource_allocation: str = "材料中未明确说明。"
+    resource_constraints: list[str] = Field(default_factory=list)
+    evaluation_metrics: list[str] = Field(default_factory=list)
 
 
 class ResearchReport(StrictModel):
@@ -279,6 +284,8 @@ class ResearchReport(StrictModel):
     paper_ids: list[UUID]
     future_directions: list[str] = Field(default_factory=list)
     evidence: list[EvidenceRef] = Field(default_factory=list)
+    generation_method: str = "unknown"
+    quality_notes: list[str] = Field(default_factory=list)
 
 
 class StageEvent(StrictModel):

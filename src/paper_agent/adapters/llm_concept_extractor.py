@@ -64,7 +64,11 @@ class LLMConceptExtractor:
         self.base_url = (
             base_url or os.getenv("PAPER_AGENT_LLM_BASE_URL", "https://api.deepseek.com")
         ).rstrip("/")
-        self.api_key = api_key or os.getenv("PAPER_AGENT_LLM_API_KEY", "")
+        self.api_key = (
+            api_key
+            if api_key is not None
+            else (os.getenv("PAPER_AGENT_LLM_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+        )
         self.model = model or os.getenv("PAPER_AGENT_LLM_MODEL", "deepseek-chat")
         self.timeout = timeout
         self.max_retries = max_retries

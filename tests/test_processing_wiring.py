@@ -116,7 +116,8 @@ class ProcessingWiringTest(unittest.TestCase):
         self.assertIn("抽取式降级", summary.relevance_to_idea)
         self.assertIn("A Study", report.markdown)
         self.assertIn("参考文献", report.markdown)
-        self.assertTrue(1000 <= review_length(report.executive_summary) <= 1500)
+        self.assertTrue(0 < review_length(report.executive_summary) <= 1500)
+        self.assertEqual(report.generation_method, "extractive")
         self.assertEqual(report.paper_ids, [paper.paper_id])
         self.assertEqual(len(report.evidence), len(summary.evidence))
         self.assertTrue(report.future_directions)
@@ -207,7 +208,7 @@ def test_processing_prefers_summary_key_and_can_reuse_planner_key(
     )
     deps = build_agent(settings)._pipeline.deps
     extractor = deps.query_planner.concept_extractor
-    assert extractor.api_key == planner_key
+    assert extractor.api_key == (planner_key or summary_key)
     assert extractor.model == settings.llm_model
     assert extractor.base_url == settings.llm_base_url
     assert (deps.summarizer._client is not None) == bool(summary_key or planner_key)
